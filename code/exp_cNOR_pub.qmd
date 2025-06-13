@@ -1,0 +1,2398 @@
+---
+title: "exp_cNOR_pub"
+author: "Elise Rivett"
+date: "2025-06-13"
+output: html_document
+---
+#Goal: Analyze isotopic data collected for N~2~O synthesis catalyzed by *Paracoccus denitrificans* cytochrome *c* nitric oxide reductase (cNOR).
+
+  - Use the standard Rayleigh model (Rayleigh distillation equation) for analysis of $\delta$^18^O and $\delta$^15^N^bulk^.
+  
+  - Use the Expanded Rayleigh model for analysis of position-specific isotope effects for $\delta$^15^N^$\alpha$^ and $\delta$^15^N^$\beta$^
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load packages.
+```{r load_packages}
+library(ggplot2)
+library(tidyverse)
+library(nlstools)
+library(modelr) #provides rmse() function
+library(egg) #provides a way to save ggplots with specified sizes
+library(moments) #allows skewness and kurtosis calculations
+library(plotrix) #allows for standard error of the mean calculations
+library(car) #for ncvTest
+library(here) #Used to create file paths relative to top-level directory.
+library(outliers) #used for Grubbs' test for outliers
+library(MASS) #used for robust linear modeling (rlm)
+library(lme4) #used for mixed-effects models and ICC calculation
+library(lmerTest) #used to compute p-values, etc for coefficients of mixed-effects models
+```
+#Naming conventions
+
+Throughout this file, bulk N is abbreviated as "p" (for "product").
+For example, `delta_p` refers to $\delta$^15^N^bulk^.
+
+$\delta$^18^O^N~2~O = delta_o
+
+"Fractionation factor" (normally abbreviated as $\alpha$) is abbreviated as `ff` to avoid confusion with N^$\alpha$^.
+
+$\alpha$~N-bulk~ = `ff_p`
+
+$\alpha$~N-$\alpha$~ = `ff_alpha`
+
+$\alpha$~N-$\beta$~ = `ff_beta`
+
+Other Greek letters are spelled out in object names. For example:
+
+Enrichment factor ($\epsilon$) = `epsilon`
+
+Other abbreviations
+
+- lm    linear regression model
+
+- nls   nonlinear least square regression model
+
+- sd    standard deviation
+
+- se    standard error
+
+- SP    site preference
+
+#Import all experimental data (including outliers)
+
+- Use cNOR_all_raw, where N2O_nmol and f have been recalculated without the estimate that 0.1% of NO initially added is N2O.
+
+- cNOR_all_raw also includes these columns for calculating uncertainty in f:
+ - sample_N2O_nmol: nmol of N2O in the 30 mL sample bottle (calculated from m44 peak height using a standard curve)
+ 
+  - sd_sample_nmol: Standard deviation of the N2O nmol in the 30 mL sample bottle. See https://chem.libretexts.org/Courses/Duke_University/CHEM_401L%3A_Analytical_Chemistry_Lab/CHEM_401L%3A_Analytical_Chemistry_Lab_Manual/02%3A_Calibration_and_Quantitative_Techniques/2.05%3A_Uncertainty_in_values_determined_from_a_Calibration_Curve
+ 
+ and references therein:
+ (a)	Miller, J. N. Analyst 1991, 116, 3–14; (b) Sharaf, M. A.; Illman, D. L.; Kowalski, B. R. Chemometrics, Wiley-Interscience: New York, 1986, pp. 126-127; (c) Analytical Methods Committee “Uncertainties in concentrations estimated from calibration experiments,” AMC Technical Brief, March 2006
+ 
+ - sample_V: volume of headspace sampled from the reaction bottle. (Sample was removed from 160 mL reaction bottle and transferred to the 30 mL sample bottle.)
+ 
+ - N2O_nmol_rxn_bottle: nmol in the rxn bottle (160 mL bottle) at that timepoint; used for calculating sd_f
+ 
+- sd_N2O_nmol: sd of N2O in rxn bottle at that timepoint; equivalent to sd of total N2O produced
+  - total N2O produced = (N2O in rxn bottle) + (N2O during previous timepoints)
+  However, sd of N2O removed during previous timepoints is negligible (<= 0.1 nmol) and thus was not included in the calculation
+  
+  - sd_f: standard deviation of f, calculated using sd of N_s0 and sd_N2O_nmol
+
+```{r import_cNOR_all}
+cNOR_all_raw <- read.table(here("data/input/cNOR_all_raw.csv"),sep = ",", header = TRUE )
+```
+
+#Make color-blind palettes for ggplot.
+```{r cbPalette_repeat}
+#http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/#a-colorblind-friendly-palette
+
+# The palette with grey:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# The palette with black:
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# To use for fills, add
+  #scale_fill_manual(values=cbPalette)
+
+# To use for line and point colors, add
+  #scale_colour_manual(values=cbPalette)
+```
+
+#cNOR_all: Calculate additional values: (1-f), [-flnf/(1-f)], etc
+```{r cNOR_all}
+cNOR_all <- cNOR_all_raw %>%
+
+  #Add back-calculated values
+mutate(
+ N_p = N2O_nmol*2,
+ N_s = N_s0 - N_p,
+ one_minus_f = 1-f,
+ `-flnf/(1-f)` = -f*log(f)/(1-f),
+ 
+#Add more values for N (for Expanded Rayleigh model)
+ R_std = 0.0036765, #R for atmospheric N2
+ R_p = (delta_p/1000 + 1)*R_std,
+ R_alpha = (delta_alpha/1000 + 1)*R_std,
+ R_beta = (delta_beta/1000 + 1)*R_std,
+ `14N_p` = N_p/(1 + R_p),
+ `15N_p` = R_p*`14N_p`,
+ `14N_alpha` = 0.5*N_p/(1 + R_alpha),
+ `15N_alpha` = R_alpha*`14N_alpha`,
+ tau = `14N_alpha`/`14N_p`
+
+)
+
+write.csv(cNOR_all, here("data/output/exp_cNOR/cNOR_all.csv"), row.names = FALSE)
+```
+
+#Make table with only the observations included in the final analysis.
+
+For each replicate, 1-2 observations at the end of the reaction were excluded because N2O production had ceased by that point (i.e., f stopped decreasing).
+  
+Observations that were excluded:
+  
+  - Replicate 1: Observations 6 and 7 (rep 1-7 and rep 1-8).
+  
+  - Replicate 2: Observations 4 and 5 (rep 2-4 and rep 2-5)
+  
+  - Replicate 3: Observation 6 (rep 3-6)
+
+Use this table as the input table for all subsequent analysis.
+```{r write_cNOR_raw}
+cNOR_raw <- cNOR_all %>% filter(
+  ##Replicate 1 - remove last two observations
+  Name != "cNOR Rep 1-7" & Name != "cNOR Rep 1-8" &
+  
+  ##Replicate 2 - remove last two observations 
+  Name != "cNOR Rep 2-4" & Name != "cNOR Rep 2-5" &
+    
+  ##Replicate 3 - remove last observation
+  Name != "cNOR Rep 3-6"  
+)
+
+#Write table to input folder. Use this table as the input table for all subsequent analysis.
+write.csv(cNOR_raw, here("data/input/cNOR_raw.csv"), row.names = FALSE)
+
+#Write table to output folder. A subset of this table will be included in the SI (Table S1).
+write.csv(cNOR_raw, here("data/output/exp_cNOR/cNOR_raw.csv"), row.names = FALSE)
+```
+
+#Import experimental cNOR data with the appropriate observations removed (see above)
+
+This dataset describes NO reduction to N~2~O by purified bacterial cytochrome *c* nitric oxide reductase (cNOR) from *Paracoccus denitrificans*.
+
+There are three biological replicates in this dataset.
+
+##Table S1 is a subset of this table
+```{r import_cNOR_raw}
+cNOR_raw <- read.table(here("data/input/cNOR_raw.csv"),sep = ",", header = TRUE )
+```
+
+#cNOR: Calculate values needed for the Expanded Rayleigh model.
+```{r cNOR}
+cNOR <- cNOR_raw %>%
+
+  #Add back-calculated values
+mutate(
+ N_p = N2O_nmol*2,
+ N_s = N_s0 - N_p,
+ f = 1 - one_minus_f,
+ #one_minus_f = 1-f,
+ `-flnf/(1-f)` = `X.flnf..1.f.`,
+ 
+#Add more values for N (for Expanded Rayleigh model)
+ R_std = 0.0036765, #R for atmospheric N2
+ R_p = (delta_p/1000 + 1)*R_std,
+ R_alpha = (delta_alpha/1000 + 1)*R_std,
+ R_beta = (delta_beta/1000 + 1)*R_std,
+ `14N_p` = N_p/(1 + R_p),
+ `15N_p` = R_p*`14N_p`,
+ `14N_alpha` = 0.5*N_p/(1 + R_alpha),
+ `15N_alpha` = R_alpha*`14N_alpha`,
+ tau = `14N_alpha`/`14N_p`
+)
+
+write.csv(cNOR, here("data/output/exp_cNOR/cNOR.csv"), row.names = FALSE)
+```
+
+#Table S1 (cNOR): Write table with delta values and f values for SI.
+```{r SI_delta_table, eval=FALSE}
+
+(cNOR_delta_SI <- cNOR %>%
+  mutate(
+
+    N2O_umol = c(
+    paste(round(as.numeric(cNOR$N2O_nmol/1000), 2), "\u00B1", round(as.numeric(cNOR$sd_N2O_nmol/1000), 2))
+    ),
+    
+    f = c(
+    paste(round(as.numeric(cNOR$f), 2), "\u00B1", round(as.numeric(cNOR$sd_f), 2))
+    ),
+    
+    delta_o =
+      paste(round(as.numeric(cNOR$delta_o), 2)),
+    
+    delta_p =
+      paste(round(as.numeric(cNOR$delta_p), 2)),
+    
+    delta_alpha =
+      paste(round(as.numeric(cNOR$delta_alpha), 2)),
+    
+    delta_beta =
+      paste(round(as.numeric(cNOR$delta_beta), 2)),
+    
+    SP =
+      paste(round(as.numeric(cNOR$SP), 2))    
+  ) %>%
+   
+   dplyr::select(
+     Date, Replicate, Time_min, N2O_umol, f, delta_o, delta_p, delta_alpha, delta_beta, SP
+   )
+
+)
+
+#Write table to output folder
+write.csv(cNOR_delta_SI, here("data/output/exp_cNOR/cNOR_delta_SI.csv"), row.names = TRUE)
+```
+
+#Name linear regression models for standard Rayleigh plots. Pool observations from all three replicates.
+```{r cNOR_lm_delta}
+cNOR_lm_delta_p <- lm(
+  delta_p ~ `-flnf/(1-f)`, data = cNOR 
+)
+
+cNOR_lm_delta_alpha <- lm(
+  delta_alpha ~ `-flnf/(1-f)`, data = cNOR
+)
+
+cNOR_lm_delta_beta <- lm(
+  delta_beta ~ `-flnf/(1-f)`, data = cNOR
+)
+```
+
+#Check the summary for each standard Rayleigh linear regression model.
+```{r summary_cNOR_lm}
+(summary(cNOR_lm_delta_p))
+(rmse(cNOR_lm_delta_p, cNOR))
+
+(summary(cNOR_lm_delta_alpha))
+
+(summary(cNOR_lm_delta_beta))
+```
+#Plot histogram of residuals for the standard Rayleigh model where y = delta_p.
+
+##Note: Pool observations from all three replicates.
+```{r residuals_Ray}
+#Plot histogram of residuals
+hist_lm_delta_p_res <- hist(cNOR_lm_delta_p$residuals)
+
+#Make dataframe with fitted values and residuals
+cNOR_lm_delta_p_res_tb <-
+  tibble(
+    fitted.values = cNOR_lm_delta_p$fitted.values,
+    residuals = cNOR_lm_delta_p$residuals)
+
+#Make table with properties of residuals
+(cNOR_lm_delta_p_res_tb2 <- tibble(
+  min = min(cNOR_lm_delta_p$residuals),
+  max = max(cNOR_lm_delta_p$residuals),
+  sd = sd(cNOR_lm_delta_p$residuals), #sample standard deviation
+  skewness = skewness(cNOR_lm_delta_p$residuals),
+  kurtosis = kurtosis(cNOR_lm_delta_p$residuals)
+  )
+)
+
+write.csv(cNOR_lm_delta_p_res_tb2, here("data/output/exp_cNOR/cNOR_lm_delta_p_res_tb2.csv"), row.names = TRUE)
+```
+
+##cNOR: Plot residual for standard Rayleigh model where y = delta_p (pooled replicates)
+
+It might be easier to see the residuals when plotted this way.
+```{r cNOR_lm_delta_p_res}
+#Define the residuals for each lm model.
+cNOR_lm_delta_p_res <- resid(cNOR_lm_delta_p)
+
+#Plot residuals vs fitted values for delta_p
+
+##Pooled replicates
+plot(x = fitted(cNOR_lm_delta_p), y = cNOR_lm_delta_p_res, xlab = "Fitted values", ylab = "Residuals delta_p")
+
+#add a horizontal line at 0 (a = slope, b = intercept)
+abline(0,0)
+```
+
+
+#Check mulitple R squared calculation for the standard Rayleigh model where y = delta_p (pooled replicates)
+
+Calculate (multiple) R squared value
+R^2 = 1 - SSR/SST
+SSR: residual sum of squares
+SST: total sum of sum of squares
+
+Calculations confirm that this is the correct equation for the multiple R squared value listed in the summary for linear regression models (lm).
+```{r R_squared_check}
+#Add more values to residual table
+cNOR_lm_delta_p_res_tb$res_squared = (cNOR_lm_delta_p_res_tb$residuals[1:13])^2
+
+#yi - (mean y)
+cNOR_lm_delta_p_res_tb$ydist_from_mean = cNOR$delta_p[2:14] - mean(cNOR$delta_p[2:14])
+
+#(yi - mean y)^2
+cNOR_lm_delta_p_res_tb$ydist_from_mean_squared = (cNOR_lm_delta_p_res_tb$ydist_from_mean)^2
+
+(
+  multiple_R_squared <- 1- (sum(cNOR_lm_delta_p_res_tb$res_squared))/ sum(cNOR_lm_delta_p_res_tb$ydist_from_mean_squared)
+)
+```
+#Grubbs test for MS: cNOR - pooled replicates; test for one outlier after observations were removed
+
+Observations after N2O production plateaued were removed (see above).
+
+type = 10
+
+Tests if the one value that is the farthest from the mean (absolute value of the difference from the mean) is an outlier by calculating Grubbs' statistic G.
+
+G = max|Y - mean Y|/s
+
+where Y is an individual value, mean Y (or Y bar) is the average of all values, and s is the sample standard deviation.
+
+https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h1.htm
+
+p-value < 0.05: Reject the null hypothesis and conclude that the value(s) in question is/are outliers.
+
+p-value > 0.05: Fail to reject the null hypothesis; insufficient evidence to say that the value(s) in question is/are outlier(s).
+
+Null hypothesis: There is no outlier
+
+For more details, see:
+
+https://www.statology.org/grubbs-test-r/
+```{r cNOR_all_pool_grubbs_test_one_outlier}
+##type = 10: Test if the absolute max value is an outlier
+grubbs.test(cNOR_lm_delta_p$residuals)
+
+```
+##Grubbs' test indicates that there are no outliers in the pooled data. (Test was applied after observations that occurred after N2O production plateaued were removed.)
+
+#Calculate delta_s using mass-balance equation
+
+Mass-balance equation (Mariotti et al., 1981, Eq. (9))
+f*delta_s +(1-f)*delta_p = delta_s0
+
+Rearranged:
+
+delta_s = (delta_s0 - (1-f)*delta_p)/f
+```{r add_delta_s}
+cNOR <- cNOR %>%
+  dplyr::mutate(
+    delta_s0 = c(summary(cNOR_lm_delta_p)$coefficients[1,1]),
+    delta_s = (delta_s0 - (1-f)*delta_p)/f
+)
+```
+
+#Figure S5B: Graph standard Rayleigh plot (x = -flnf/(1-f)) for delta_p and add linear regression (lm) line to plot.
+
+##Note: Pool observations from all three replicates.
+```{r plot_Rayleigh_cNOR_delta_p_2, message=FALSE, warning=FALSE}
+(exp_Rayleigh_delta_p_2 <- ggplot(data = cNOR, mapping = 
+         aes(x = `-flnf/(1-f)`))+
+  geom_point(mapping = aes(y = delta_p), color = "#999999",
+             shape = 16)+
+  geom_smooth(mapping = aes(y = delta_p), color = "#999999",
+              method = lm, se = FALSE)+
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+    
+  ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+    
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep=""))) 
+)
+
+ggsave(exp_Rayleigh_delta_p_2, filename = here("graphs/exp_cNOR/exp_Rayleigh_delta_p_2.tiff"), height = 3, width = 5, units = "in")
+```
+
+#Figure S6: Graph standard Rayleigh plot (x = flnf/(1-f)) for SP.
+
+Don't add linear regression line to this plot, as the trend in SP values is insignificant.
+
+##Note: Pool observations from all three replicates.
+```{r plot_Rayleigh_cNOR_SP, message=FALSE, warning=FALSE}
+(exp_Rayleigh_SP <- ggplot(data = cNOR, mapping = 
+         aes(x = `-flnf/(1-f)`))+
+  geom_point(mapping = aes(y = SP), color = "#41b6c4",
+             shape = 16)+
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+    
+  ylim(0, 10)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+    
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^SP),bold(" (\u2030)"),sep=""))) 
+)
+
+ggsave(exp_Rayleigh_SP, filename = here("graphs/exp_cNOR/exp_Rayleigh_SP.tiff"), height = 3, width = 5, units = "in")
+```
+
+##Apply linear regression model to SP
+```{r cNOR_lm_SP_2}
+cNOR_lm_SP_2 <- lm(SP ~ `-flnf/(1-f)`, data = cNOR)
+summary(cNOR_lm_SP_2)
+```
+
+#Figure 1 for MS: Graph N2O production vs time (pooled replicates)
+```{r plot_N2O_prod_pool}
+#Pivot table
+cNOR_tidy <- cNOR %>% 
+  pivot_longer(c(delta_p, delta_alpha, delta_beta), names_to = "delta_15N", values_to = "delta_15N_values")
+
+(cNOR_N2O_prod_pool <- ggplot(data = filter(cNOR_tidy, delta_15N == "delta_p" &!Name == "time_0"))+
+  geom_point(mapping = 
+         aes(x = Time_min, y = (N2O_nmol/1000)), shape = 16, size = 1.5, color = "black")+
+  xlab(expression(paste(bold("Time (min)"))))+
+  ylab(expression(paste( bold(N[2]),bold("O" ), bold (" ("), bold( mu), bold("mol) "), sep="")))+
+  xlim(0, 250)+
+  ylim(0, 4)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+ggsave(cNOR_N2O_prod_pool, filename = here("graphs/exp_cNOR/cNOR_N2O_prod_pool.tiff"), height = 2.5, width = 3.25, units = "in")
+
+```
+
+#Figure 1: "Linear" portion of N2O production (time <= 120 min)
+
+Graph N2O production vs time (pooled replicates)
+```{r plot_N2O_prod_pool_linear_120min}
+(cNOR_N2O_prod_pool_lin_120min <- ggplot(data = filter(cNOR, Time_min <= 120 &!Name == "time_0"))+
+  geom_point(mapping = 
+         aes(x = Time_min, y = (N2O_nmol/1000)), shape = 16, size = 1.5, color = "black")+
+  geom_smooth(mapping = aes(x = Time_min, y = (N2O_nmol/1000)), color = "#999999", method = lm, se = FALSE)+
+   
+  xlab(expression(paste(bold("Time (min)"))))+
+  ylab(expression(paste( bold(N[2]),bold("O" ), bold (" ("), bold( mu), bold("mol) "), sep="")))+
+  xlim(0, 250)+
+  ylim(0, 4)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+ggsave(cNOR_N2O_prod_pool_lin_120min, filename = here("graphs/exp_cNOR/cNOR_N2O_prod_pool_lin_120min.tiff"), height = 2.5, width = 3.25, units = "in")
+```
+         
+#Name linear regression plot where y = N2O nmol and x = time (time <=120 min)
+```{r lm_N2Oprod_120 min}
+cNOR_lm_N2Oprod_120min <- lm(
+  N2O_nmol ~ Time_min, data = filter(cNOR, Time_min <= 120 &!Name == "time_0") 
+)
+
+(summary(cNOR_lm_N2Oprod_120min))
+```
+
+#Figure 2B: Plot delta_N_bulk against (1-f)
+
+```{r plot_cNOR_delta_3, warning=FALSE}
+#Pivot table
+cNOR_tidy <- cNOR %>% 
+  pivot_longer(c(delta_p, delta_alpha, delta_beta), names_to = "delta_15N", values_to = "delta_15N_values")
+
+cNOR_tidy$delta_15N <- factor(cNOR_tidy$delta_15N, levels = c("delta_p", "delta_alpha", "delta_beta"))
+
+
+(cNOR_delta_p_3 <- ggplot()+
+
+  geom_point(data = filter(cNOR_tidy, delta_15N == "delta_p"), mapping =
+         aes(x = one_minus_f, y = delta_15N_values, shape = delta_15N, color = delta_15N), size = 2)+
+  scale_color_manual(name = "delta values",
+    values = c("#999999"),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^bulk), sep=""))
+  ))+
+ 
+  scale_shape_manual(name = "delta values",
+    values = c(16),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^bulk), sep=""))
+  ))+    
+    
+  #xlim(0, 1)+
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+    
+  ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+  
+  #format plot title
+  theme(plot.title = element_text(size = 12))+
+  theme(plot.title = element_text(face = "bold", vjust = -5))+
+  theme(plot.subtitle = element_text(vjust = -10, hjust = 0.1))+  
+  #labs(
+    #title = expression(paste(bold("NO reduction (cNOR)"))),
+    #subtitle = expression(paste(bold("Replicates 1-3 (pooled)"))))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  #theme(legend.text = element_blank())+
+  theme(legend.position = "none")+
+  
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(cNOR_delta_p_3, filename = here("graphs/exp_cNOR/cNOR_delta_p_3.tiff"), height = 2.5, width = 3.25, units = "in")
+```
+
+#Figure 2A: Graph delta_o (pooled replicates)
+```{r plot_cNOR_delta_o}
+(cNOR_delta_o <- ggplot()+
+  geom_point(data = filter(cNOR, f < 1), mapping = 
+         aes(x = one_minus_f, y = delta_o), shape = 15, color = "#D55E00", size = 2)+
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+
+  #ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  #format axis titles
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^18),bold(O),bold(" (\u2030)"),sep="")))+
+  
+  #format plot title
+  #theme(plot.title = element_text(size = 16))+
+  #theme(plot.title = element_text(face = "bold", vjust = -1))+
+  #theme(plot.subtitle = element_text(vjust = -10, hjust = 0.1))+  
+  #labs(
+   # title = expression(paste(bold("NO reduction (cNOR data w/ outliers)"))))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = "none")+   
+   
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black")) 
+)
+  
+#save figure
+ggsave(cNOR_delta_o, filename = here("graphs/exp_cNOR/cNOR_delta_o.tiff"), height = 2.5, width = 3.25, units = "in")
+```
+
+##TOC art: Graph delta_p, delta_alpha, and delta_beta vs (1-f) and add initial isotope ratio
+
+- Add legend and label for delta_s0 manually.
+- Resize figure manually.
+
+```{r plot_cNOR_TOC, warning=FALSE}
+#Pivot table
+cNOR_tidy <- cNOR %>% 
+  pivot_longer(c(delta_p, delta_alpha, delta_beta), names_to = "delta_15N", values_to = "delta_15N_values")
+
+cNOR_tidy$delta_15N <- factor(cNOR_tidy$delta_15N, levels = c("delta_p", "delta_alpha", "delta_beta"))
+
+
+(cNOR_TOC <- ggplot()+
+  geom_abline(intercept = cNOR$delta_s0[1],slope = 0, color = "#E69F00", linetype = 2)+
+  geom_point(data = cNOR_tidy, mapping = 
+         aes(x = one_minus_f, y = delta_15N_values, shape = delta_15N, color = delta_15N), size = 3)+
+  scale_color_manual(name = "delta values",
+    values = c("#999999", "#56B4E9", "#009E73"),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^bulk), sep="")),    
+    expression(paste(bold(delta^15),bold(N^alpha), sep="")),
+    expression(paste(bold(delta^15),bold(N^beta), sep=""))
+  ))+
+ 
+  scale_shape_manual(name = "delta values",
+    values = c(16, 15, 17),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^bulk), sep="")),      
+    expression(paste(bold(delta^15),bold(N^alpha), sep="")),
+    expression(paste(bold(delta^15),bold(N^beta), sep=""))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+  ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 18))+
+  theme(axis.text = element_text(size = 18))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.text = element_text(size = 16))+
+  #theme(legend.position = c(0.84,0.3))
+  theme(legend.position = "none")
+)
+
+#save figure
+ggsave(cNOR_TOC, filename = here("graphs/exp_cNOR/cNOR_TOC.tiff"), height = 3, width = 5, units = "in")
+```
+
+##Figure 3A: Graph delta_alpha and delta_beta, and line for calculated delta_s0 vs (1-f) for MS.
+
+Note - legend label for delta_s0 has to be added manually
+```{r plot_cNOR_delta_4, warning=FALSE}
+#Pivot table
+cNOR_tidy_4 <- cNOR %>% 
+  pivot_longer(c(delta_alpha, delta_beta), names_to = "delta_15N", values_to = "delta_15N_values")
+
+cNOR_tidy_4$delta_15N <- factor(cNOR_tidy_4$delta_15N, levels = c("delta_alpha", "delta_beta"))
+
+
+(cNOR_delta_4 <- ggplot()+
+    geom_abline(intercept = cNOR$delta_s0[1],slope = 0, color = "#E69F00", linetype = 2)+
+  geom_point(data = cNOR_tidy_4, mapping = 
+         aes(x = one_minus_f, y = delta_15N_values, shape = delta_15N, color = delta_15N), size = 2)+
+  scale_color_manual(name = "delta values",
+    values = c("#a6cee3", "#33a02c"),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^alpha), sep="")),
+    expression(paste(bold(delta^15),bold(N^beta), sep=""))
+  ))+
+ 
+  scale_shape_manual(name = "delta values",
+    values = c(15, 17),
+    labels = c(
+    expression(paste(bold(delta^15),bold(N^alpha), sep="")),
+    expression(paste(bold(delta^15),bold(N^beta), sep=""))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  #theme(legend.position = c(0.8,0.2))+
+  theme(legend.position = "none")+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(cNOR_delta_4, filename = here("graphs/exp_cNOR/cNOR_delta_alpha_beta.tiff"), height = 2.5, width = 3.25, units = "in")
+```
+
+#Figure 3B: Graph SP vs (1-f) (cNOR replicates 1-3 pooled) for MS
+```{r plot_cNOR_SP_2, warning=FALSE}
+
+(cNOR_SP_2 <- ggplot(data = cNOR, mapping = 
+         aes(x = one_minus_f))+
+  geom_point(mapping = aes(y = SP), color = "#41b6c4",
+             shape = 16, size = 2)+
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  ylim(0, 10)+
+   
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+    
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^SP),bold(" (\u2030)"),sep="")))+
+   
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+##save figure
+ggsave(cNOR_SP_2, filename = here("graphs/exp_cNOR/cNOR_SP_2.tiff"), height = 2.5, width = 3.25, units = "in")
+```
+
+#Make blank table (tibble) for storing values extracted from each model.
+```{r summary_blank}
+#n = number of loops
+n = 1
+
+#m = number of models; in this case, m = 1 because we're only using one model for each table
+
+m <- 1
+
+blank_tb <- function(n, m = 1) {
+  tibble(
+    Model = vector(length = n*m, mode = "expression"),
+    Data = vector(length = n*m, mode = "expression"),
+    Replicate = vector(length = n*m, mode = "expression"),
+  
+    Multiple_R_squared = vector(length = n*m, mode = "numeric"),
+    RMSE_lm = vector(length = n*m, mode = "numeric"), #RMSE value for delta_p prediction from linear Rayleigh model
+  
+    lm_delta_p_ncv = vector(length = n*m, mode = "numeric"), #p-value from ncvTest
+  
+    f_min = vector(length = n*m, mode = "numeric"),
+    f_max = vector(length = n*m, mode = "numeric"),
+  
+    delta_s0_meas = vector(length = n*m, mode = "numeric"),
+    se_delta_s0_meas = vector(length = n*m, mode = "numeric"),
+    
+    delta_s0_calc = vector(length = n*m, mode = "numeric"),
+    se_delta_s0_calc = vector(length = n*m, mode = "numeric"),
+    
+    RMSE_nls = vector(length = n*m, mode = "numeric"), #RMSE value for delta_p prediction from nonlinear model
+    
+    rho = vector(length = n*m, mode = "numeric"),
+    se_rho = vector(length = n*m, mode = "numeric"),
+  
+    tau = vector(length = n*m, mode = "numeric"),
+    se_tau = vector(length = n*m, mode = "numeric"),
+    
+    epsilon_p = vector(length = n*m, mode = "numeric"),
+    se_epsilon_p = vector(length = n*m, mode = "numeric"),
+    
+    ff_p = vector(length = n*m, mode = "numeric"),
+    se_ff_p = vector(length = n*m, mode = "numeric"),
+    
+    ff_alpha = vector(length = n*m, mode = "numeric"),
+    se_ff_alpha = vector(length = n*m, mode = "numeric"),
+    
+    ff_beta = vector(length = n*m, mode = "numeric"),
+    se_ff_beta = vector(length = n*m, mode = "numeric"),   
+ 
+    epsilon_alpha = vector(length = n*m, mode = "numeric"),
+    se_epsilon_alpha = vector(length = n*m, mode = "numeric"),
+    
+    epsilon_beta = vector(length = n*m, mode = "numeric"),
+    se_epsilon_beta = vector(length = n*m, mode = "numeric"),
+    
+    KIE_p = vector(length = n*m, mode = "numeric"),
+    se_KIE_p = vector(length = n*m, mode = "numeric"),
+    
+    KIE_alpha = vector(length = n*m, mode = "numeric"),
+    se_KIE_alpha = vector(length = n*m, mode = "numeric"),
+    
+    KIE_beta = vector(length = n*m, mode = "numeric"),
+    se_KIE_beta = vector(length = n*m, mode = "numeric"),
+    
+    pval_epsilon_p = vector(length = n*m, mode = "numeric"),
+    pval_rho = vector(length = n*m, mode = "numeric"),
+    pval_tau = vector(length = n*m, mode = "numeric")
+)
+}
+```
+
+#Apply the standard Rayleigh model to pooled data from all three replicates
+
+Note that the standard Rayleigh model is only accurate for bulk N (delta_p). The standard Rayleigh model was applied to delta_alpha and delta_beta only for comparison to the Expanded Rayleigh model.
+```{r cNOR_Rayleigh, warning=FALSE}
+#n = number of loops; in this case, n = 1 because the data from all three replicates are pooled
+n <- 1
+
+#m = number of models; in this case, m = 1 because we're only using one model (standard Rayleigh)
+
+m <- 1
+
+#Make empty table to store results
+cNOR_std_ray <- blank_tb(n, m)
+
+cNOR_std_ray <- mutate(cNOR_std_ray,
+  Model = c(
+    "Standard Rayleigh"
+  ),
+  
+  Data = c(
+    "cNOR Replicates 1-3"
+),
+
+  Replicate = "pooled 1-3"
+) 
+
+for (i in 1:n) {
+  
+  #Code for analyzing individual replicates
+ # if(i == 1){
+  #  data <- cNOR_std_ray
+  #} #else if(i == 2){
+    #data <- other_data
+  #}
+  
+  data <- filter(cNOR, f < 1)
+  
+  #Apply standard Rayleigh model where x = `-flnf/(1-f)` and y = delta_p, delta_alpha, or delta_beta
+    lm_delta_p <- lm(delta_p ~ `-flnf/(1-f)`, data = data)
+    
+    lm_delta_alpha <- lm(delta_alpha ~ `-flnf/(1-f)`, data = data)
+    
+    lm_delta_beta <- lm(delta_beta ~ `-flnf/(1-f)`, data = data)
+  
+    #Fill in table w/ values extracted from standard Rayleigh model where y = delta_p
+    cNOR_std_ray$Multiple_R_squared[i] = summary(lm_delta_p)$r.squared
+    cNOR_std_ray$RMSE_lm[i] = rmse(model = lm_delta_p, data = data)
+  
+    cNOR_std_ray$lm_delta_p_ncv[i] = car::ncvTest(lm_delta_p)$p #p-value from ncvTest
+  
+    cNOR_std_ray$f_min[i] = min(data$f)
+    cNOR_std_ray$f_max[i] = max(data$f)
+    
+    cNOR_std_ray$delta_s0_meas[i] = "NA"
+    cNOR_std_ray$se_delta_s0_meas[i] = "NA"
+  
+    cNOR_std_ray$delta_s0_calc[i] = summary(lm_delta_p)$coefficients[1,1]
+    cNOR_std_ray$se_delta_s0_calc[i] = summary(lm_delta_p)$coefficients[1,2]    
+    
+    cNOR_std_ray$RMSE_nls[i] = "NA"
+    
+    cNOR_std_ray$rho[i] = "NA"
+    cNOR_std_ray$se_rho[i] = "NA"
+  
+    cNOR_std_ray$tau[i] = "NA"
+    cNOR_std_ray$se_tau[i] = "NA"
+    
+    cNOR_std_ray$epsilon_p[i] = as.numeric(lm_delta_p$coefficients[2])
+    cNOR_std_ray$se_epsilon_p[i] = summary(lm_delta_p)$coefficients[2,2]
+    
+    cNOR_std_ray$ff_p[i] = 1 + lm_delta_p$coefficients[2]/1000
+    cNOR_std_ray$se_ff_p[i] = cNOR_std_ray$se_epsilon_p[i]/1000
+    
+    cNOR_std_ray$epsilon_alpha[i] = as.numeric(lm_delta_alpha$coefficients[2])
+    cNOR_std_ray$se_epsilon_alpha[i] = summary(lm_delta_alpha)$coefficients[2,2]
+    
+    cNOR_std_ray$epsilon_beta[i] = as.numeric(lm_delta_beta$coefficients[2])
+    cNOR_std_ray$se_epsilon_beta[i] = summary(lm_delta_beta)$coefficients[2,2]
+    
+    cNOR_std_ray$ff_alpha[i] = 1 + lm_delta_alpha$coefficients[2]/1000
+    cNOR_std_ray$se_ff_alpha[i] = cNOR_std_ray$se_epsilon_alpha[i]/1000
+    
+    cNOR_std_ray$ff_beta[i] = 1 + lm_delta_beta$coefficients[2]/1000
+    cNOR_std_ray$se_ff_beta[i] = cNOR_std_ray$se_epsilon_beta[i]/1000  
+    
+    cNOR_std_ray$KIE_p[i] = 1/cNOR_std_ray$ff_p[i]
+    cNOR_std_ray$se_KIE_p[i] = abs(-1/(cNOR_std_ray$ff_p[i])^2*cNOR_std_ray$se_ff_p[i])
+    
+    cNOR_std_ray$KIE_alpha[i] = 1/cNOR_std_ray$ff_alpha[i]
+    cNOR_std_ray$se_KIE_alpha[i] = abs(-1/(cNOR_std_ray$ff_alpha[i])^2*cNOR_std_ray$se_ff_alpha[i])
+    
+    cNOR_std_ray$KIE_beta[i] = 1/cNOR_std_ray$ff_beta[i]
+    cNOR_std_ray$se_KIE_beta[i] = abs(-1/(cNOR_std_ray$ff_beta[i])^2*cNOR_std_ray$se_ff_beta[i])
+    
+   #add p-value for epsilon_p from standard Rayleigh equation (slope of linear model, y = delta_p)
+    ##null hypothesis: epsilon = 0
+    cNOR_std_ray$pval_epsilon_p[i] = summary(lm_delta_p)$coefficients[2,4] 
+    
+    #Add p-values for rho and tau (NA since rho and tau are not calculated for the standard Rayleigh model)
+    cNOR_std_ray$pval_rho[i] = "NA"
+    cNOR_std_ray$pval_tau[i] = "NA"
+}
+
+write.csv(cNOR_std_ray, here("data/output/exp_cNOR/cNOR_std_ray.csv"), row.names = TRUE)
+
+(cNOR_std_ray)
+```
+
+##Figure S5A: Graph delta_o against -flnf/(1-f) (pooled replicates)
+```{r plot_Ray_delta_o}
+(Ray_delta_o <- ggplot(data = cNOR, mapping = 
+         aes(x = `-flnf/(1-f)`))+
+  geom_point(mapping = aes(y = delta_o), color = "#D55E00",
+             shape = 15, size = 2)+
+  geom_smooth(mapping = aes(y = delta_o), color = "#D55E00",
+              method = lm, se = FALSE)+
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+    
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^18),bold(O),bold(" (\u2030)"),sep=""))) 
+)
+
+ggsave(Ray_delta_o, filename = here("graphs/exp_cNOR/Ray_delta_o.tiff"), height = 3, width = 5, units = "in")
+```
+
+#Name the delta_o Rayleigh model where y = -flnf/(1-f) (pooled replicates)
+
+I'm plotting delta_o against -flnf/(1-f) to see if delta_o varies linearly with reaction progress. However, the slope of this plot can't be used to find the enrichment factor for oxygen because we don't have the isotopic data for H~2~O.
+```{r delta_o_Ray}
+cNOR_lm_delta_o <- lm(
+  delta_o ~ `-flnf/(1-f)`, data = cNOR 
+)
+
+(summary(cNOR_lm_delta_o))
+```
+
+#Nonlinear model 1.2 (nls1.2) applied to cNOR replicates 1-3 (pooled)
+
+Use nonlinear model to determine rho
+
+nls1.2: delta_p = 0.5*(delta_alpha + delta_beta), where delta_alpha is replaced by an equation with rho.
+
+Note: nls1.2 uses delta values instead of R values AND (1-f)*N_s0 is replaced by N_p to avoid rounding errors.
+```{r exp_nls1.2}
+exp_formula_nls1.2 <- as.formula(delta_p ~ 0.5*(
+  (rho*`15N_p`/((0.5*N_p) - rho*`15N_p`)/R_std - 1)*1000 +
+    delta_beta
+)
+)
+
+#cNOR[2:14, ] - exclude first row (where f = 1)
+
+preview(exp_formula_nls1.2, data = cNOR[2:14, ],
+        start = list(rho = 0.500), variable = 21)
+
+cNOR_nls1.2 <- nls(exp_formula_nls1.2, data = cNOR[2:14, ],
+                start = list(rho = 0.500)
+)
+
+overview(cNOR_nls1.2)
+
+(rmse(cNOR_nls1.2, data = cNOR[2:14, ]))
+```
+
+##Graph the predicted (fitted) values (in red, cNOR_nls1.2) on top of the actual experimental values (in gray) for cNOR replicates 1-3 pooled. 
+```{r plotfit_cNOR_nls1.2}
+
+#If I use ggplot to instead of plotfit, I could save the graph:
+
+nls1.2_plotfit <- cNOR[2:14, ] %>%
+  dplyr::mutate(delta_p_pred = predict(cNOR_nls1.2)) 
+
+(nls1.2_plotfit_15N_p <- ggplot(data = nls1.2_plotfit, mapping = 
+         aes(x = `15N_p`))+
+  geom_point(mapping = aes(y = delta_p), color = "#999999",
+             shape = 16)+ #For open circle, use shape = 1
+  geom_point(mapping = aes(y = delta_p_pred), color = "red",
+             shape = 3)+
+  xlab("15N_p")+ ylab("delta_bulk")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())
+)
+  
+(nls1.2_plotfit_f <- ggplot(data = nls1.2_plotfit, mapping = 
+         aes(x = one_minus_f))+
+  geom_point(mapping = aes(y = delta_p), color = "#999999",
+             shape = 16)+ #For open circle, use shape = 1
+  geom_point(mapping = aes(y = delta_p_pred), color = "red",
+             shape = 3)+
+  xlab("1-f")+ ylab("delta_bulk")+
+  xlim(0, 1)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())
+)
+
+ggsave(nls1.2_plotfit_15N_p, filename = here("graphs/exp_cNOR/nls1.2_plotfit_15N_p.png"), height = 3, width = 5, units = "in")
+
+ggsave(nls1.2_plotfit_f, filename = here("graphs/exp_cNOR/nls1.2_plotfit_f.png"), height = 3, width = 5, units = "in")
+```
+##Assess the goodness of fit through residuals for cNOR_nls1.2 (cNOR replicates 1-3 pooled)
+
+Use nlsResiduals() to extract residuals from the nls object, and use plot() to visualize the results.
+```{r cNOR_nls1.2_res, error=TRUE}
+cNOR_nls1.2_res <- nlsResiduals(cNOR_nls1.2)
+
+cNOR_nls1.2_res_plot <- plot(cNOR_nls1.2_res)
+```
+##Plot residuals for nls1.2 as histogram, assess distribution, and calculate p-value for rho (cNOR replicates 1-3 pooled).
+
+Convert t-test statistic to p-value for two-tailed t-test using pt()
+
+p-value calculation: null hypothesis is rho = 0.5 t_test_statistic = (rho - rho_null)/se_rho
+
+q = t-test statistic (one-sample, null hypothesis: rho = 0.5)
+
+df = degrees of freedom, lower.tail = if true, calculate the probability to the left of q; if FALSE, calculate the probablity to the right of q
+
+pt() calculates one-tailed p-value; multiply result by 2 to get two-tailed p-value.
+```{r cNOR_nls1.2_res}
+cNOR_nls1.2_res_df1 <- as.data.frame(cNOR_nls1.2_res$resi1) 
+
+hist(cNOR_nls1.2_res_df1$Residuals)
+
+(cNOR_nls1.2_res_df2 <- tibble(
+  min = min(cNOR_nls1.2_res_df1$Residuals),
+  max = max(cNOR_nls1.2_res_df1$Residuals),
+  sd = sd(cNOR_nls1.2_res_df1$Residuals), #sample standard deviation
+  skewness = skewness(cNOR_nls1.2_res_df1$Residuals),
+  kurtosis = kurtosis(cNOR_nls1.2_res_df1$Residuals),
+  
+#p-value calculation: null hypothesis is rho = 0.5
+#t_test_statistic = (rho - rho_null)/se_rho
+  nls_resid_t_test =
+   (summary(cNOR_nls1.2)$coefficients[1, 1] - 0.5)/ summary(cNOR_nls1.2)$coefficients[1, 2],
+ 
+  nls_resid_pval = 2*pt(q = nls_resid_t_test, df = df.residual(cNOR_nls1.2), lower.tail = FALSE)  
+  )
+)
+
+(summary(cNOR_nls1.2_res_df1$Residuals))
+
+write.csv(cNOR_nls1.2_res_df2, here("data/output/exp_cNOR/cNOR_nls1.2_res_df2.csv"), row.names = TRUE)
+
+#Jarque-Bera test for normality
+##Null hypothesis: data follows a normal distribution
+jarque.test(cNOR_nls1.2_res_df1$Residuals)
+```
+#Store results for Expanded Rayleigh model 1 (cNOR replicates 1-3 pooled)
+
+Note: exp_formula_nls1.2 and sim_formula_nls1.2 (used in other markdown files) are exactly the same
+```{r cNOR_nls1.2_tb}
+#Define formula:
+exp_formula_nls1.2 <- as.formula(delta_p ~ 0.5*(
+  (rho*`15N_p`/((0.5*N_p) - rho*`15N_p`)/R_std - 1)*1000 +
+    delta_beta
+)
+)
+
+#n = number of loops; in this case, n = 1 (data from 3 replicates pooled to make 1 dataset)
+n <- 1
+
+#m = number of models; in this case, m = 1 because we're only using one model (Expanded Rayleigh 1 = standard Rayleigh + nls1.2)
+
+m <- 1
+
+#Make empty table to store results
+cNOR_nls1.2_tb <- blank_tb(n, m)
+
+cNOR_nls1.2_tb <- mutate(cNOR_nls1.2_tb,
+  Model = c(
+    "Expanded Rayleigh 1"
+  ),
+  
+  Data = c(
+    "cNOR Replicates 1-3"
+    ),
+  
+  Replicate = c("pooled 1-3"
+  )
+)
+
+for (i in 1:n) {
+  
+  if(i == 1){
+    data <- filter(cNOR, f < 1)
+  } #else if(i == 2){
+    #data <- other_data
+  #}
+
+  #Apply nonlinear model 1.2 (exp_formula_nls1.2) (defined above)
+  nls1.2 <- nls(exp_formula_nls1.2, data = data,
+    start = list(rho = 0.500)
+)
+
+  #Add standard Rayleigh values for bulk delta_p to table
+    cNOR_nls1.2_tb$Multiple_R_squared[i] = cNOR_std_ray$Multiple_R_squared[i]
+    cNOR_nls1.2_tb$RMSE_lm[i] = cNOR_std_ray$RMSE_lm[i]
+  
+    cNOR_nls1.2_tb$lm_delta_p_ncv[i] = cNOR_std_ray$lm_delta_p_ncv[i]
+  
+    cNOR_nls1.2_tb$f_min[i] = cNOR_std_ray$f_min[i]
+    cNOR_nls1.2_tb$f_max[i] = cNOR_std_ray$f_max[i]
+
+    cNOR_nls1.2_tb$delta_s0_meas[i] = "NA"
+    cNOR_nls1.2_tb$se_delta_s0_meas[i] = "NA"
+      
+    cNOR_nls1.2_tb$delta_s0_calc[i] = cNOR_std_ray$delta_s0_calc[i]
+    cNOR_nls1.2_tb$se_delta_s0_calc[i] = cNOR_std_ray$se_delta_s0_calc[i]
+  
+  #Add values from nls1.2 to table
+    cNOR_nls1.2_tb$RMSE_nls[i] = rmse(nls1.2, data = data)
+    
+    cNOR_nls1.2_tb$rho[i] = as.numeric(coef(nls1.2))
+    cNOR_nls1.2_tb$se_rho[i] = summary(nls1.2)$coefficients[1,2]
+  
+    cNOR_nls1.2_tb$tau[i] = mean(data %>% .$tau)
+    cNOR_nls1.2_tb$se_tau[i] = std.error(data %>% .$tau)
+    
+  #Add standard Rayleigh values for bulk delta_p to table  
+    cNOR_nls1.2_tb$epsilon_p[i] = cNOR_std_ray$epsilon_p[i]
+    cNOR_nls1.2_tb$se_epsilon_p[i] = cNOR_std_ray$se_epsilon_p[i]
+    
+    cNOR_nls1.2_tb$ff_p[i] = cNOR_std_ray$ff_p[i]
+    cNOR_nls1.2_tb$se_ff_p[i] = cNOR_std_ray$se_ff_p[i]
+    
+  #Add values from nls1.2 to table
+    ## ff_alpha = (rho/tau)*ff_p
+    cNOR_nls1.2_tb$ff_alpha[i] =
+      (cNOR_nls1.2_tb$rho[i]/
+         cNOR_nls1.2_tb$tau[i])*cNOR_nls1.2_tb$ff_p[i]
+    
+    ##se_ff_alpha = sqrt((ff_p/tau*se_rho)^2 + (-rho*ff_p/tau^2*se_tau)^2+ (rho/tau*se_ff_p)^2)
+    cNOR_nls1.2_tb$se_ff_alpha[i] =
+      sqrt((cNOR_nls1.2_tb$ff_p[i]/cNOR_nls1.2_tb$tau[i]*cNOR_nls1.2_tb$se_rho[i])^2 + (-cNOR_nls1.2_tb$rho[i]*cNOR_nls1.2_tb$ff_p[i]/cNOR_nls1.2_tb$tau[i]^2*cNOR_nls1.2_tb$se_tau[i])^2+ (cNOR_nls1.2_tb$rho[i]/cNOR_nls1.2_tb$tau[i]*cNOR_nls1.2_tb$se_ff_p[i])^2)
+    
+    ##ff_beta = (1-rho)/(1-tau)*ff_p
+    cNOR_nls1.2_tb$ff_beta[i] = (1-cNOR_nls1.2_tb$rho[i])/
+      (1-cNOR_nls1.2_tb$tau[i])*cNOR_nls1.2_tb$ff_p[i]
+    
+    
+    ##se_ff_beta = sqrt((-ff_p/(1-tau)*se_rho)^2 + ((1-rho)*ff_p/(1-tau)^2*se_tau)^2 + ((1-rho)/(1-tau)*se_ff_p)^2)
+    cNOR_nls1.2_tb$se_ff_beta[i] = sqrt((-cNOR_nls1.2_tb$ff_p[i]/(1-cNOR_nls1.2_tb$tau[i])*cNOR_nls1.2_tb$se_rho[i])^2 + ((1-cNOR_nls1.2_tb$rho[i])*cNOR_nls1.2_tb$ff_p[i]/(1-cNOR_nls1.2_tb$tau[i])^2*cNOR_nls1.2_tb$se_tau[i])^2 + ((1-cNOR_nls1.2_tb$rho[i])/(1-cNOR_nls1.2_tb$tau[i])*cNOR_nls1.2_tb$se_ff_p[i])^2)   
+ 
+    ##epsilon_alpha = 1000*ff_alpha
+    cNOR_nls1.2_tb$epsilon_alpha[i] =
+      1000*(cNOR_nls1.2_tb$ff_alpha[i] - 1)
+    
+    ##se_epsilon_alpha = 1000*se_ff_alpha
+    cNOR_nls1.2_tb$se_epsilon_alpha[i] = 1000*cNOR_nls1.2_tb$se_ff_alpha[i]
+    
+    ##epsilon_beta = 1000*(ff_beta -1)
+    cNOR_nls1.2_tb$epsilon_beta[i] = 1000*(cNOR_nls1.2_tb$ff_beta[i] -1)
+    
+    ##se_epsilon_beta = 1000*se_ff_beta
+    cNOR_nls1.2_tb$se_epsilon_beta[i] = 1000*cNOR_nls1.2_tb$se_ff_beta[i]
+    
+    ##KIE = 1/ff
+    ##se_KIE = abs(-1/(ff)^2*se_ff)
+    cNOR_nls1.2_tb$KIE_p[i] = 1/cNOR_nls1.2_tb$ff_p[i]
+    cNOR_nls1.2_tb$se_KIE_p[i] = abs(-1/(cNOR_nls1.2_tb$ff_p[i])^2*cNOR_nls1.2_tb$se_ff_p[i])
+    
+    cNOR_nls1.2_tb$KIE_alpha[i] = 1/cNOR_nls1.2_tb$ff_alpha[i]
+    cNOR_nls1.2_tb$se_KIE_alpha[i] = abs(-1/(cNOR_nls1.2_tb$ff_alpha[i])^2*cNOR_nls1.2_tb$se_ff_alpha[i])
+    
+    cNOR_nls1.2_tb$KIE_beta[i] = 1/cNOR_nls1.2_tb$ff_beta[i]
+    cNOR_nls1.2_tb$se_KIE_beta[i] = abs(-1/(cNOR_nls1.2_tb$ff_beta[i])^2*cNOR_nls1.2_tb$se_ff_beta[i])
+    
+    #add p-value for epsilon_p (null hypothesis: epsilon = 0)
+    cNOR_nls1.2_tb$pval_epsilon_p[i] = cNOR_std_ray$pval_epsilon_p[i]
+    
+    #add p-value for rho (null hpothesis: rho = 0.5)
+    ##t_test_statistic = (rho - rho_null)/se_rho
+  nls_resid_t_test =
+   (summary(cNOR_nls1.2)$coefficients[1, 1] - 0.5)/ summary(cNOR_nls1.2)$coefficients[1, 2]
+ ##convert t-test statistic to p-value using pt() and multiply by 2 for two-sided test p-value
+  cNOR_nls1.2_tb$pval_rho[i] = 2*pt(q = nls_resid_t_test, df = df.residual(cNOR_nls1.2), lower.tail = FALSE)
+    
+  #Calculate p-value for average tau. Null hypothesis: tau = 0.5
+  cNOR_nls1.2_tb$pval_tau[i] = t.test(data$tau, mu = 0.5)$p.value
+
+}
+
+(cNOR_nls1.2_tb)
+```
+
+#Nonlinear model 2.2 (nls2.2) applied to cNOR replicates 1-3 pooled.
+
+nls2.2: delta_p = 0.5*(delta_alpha + delta_beta), where delta_beta is replaced by an equation with rho
+
+nls2.2 uses delta values instead of R values AND (1-f)*N_s0 is replaced w/ N_p (to avoid rounding errors)
+```{r cNOR_nls2.2}
+exp_formula_nls2.2 <- as.formula(delta_p ~ 0.5*(
+  delta_alpha +
+    ((1-rho)*`15N_p`/((0.5*N_p) - (1-rho)*`15N_p`)/R_std - 1)*1000
+)
+)
+
+preview(exp_formula_nls2.2, data = cNOR[2:14, ],
+        start = list(rho = 0.500), variable = 21)
+
+cNOR_nls2.2 <- nls(exp_formula_nls2.2, data = cNOR[2:14, ],
+                start = list(rho = 0.500)
+)
+
+overview(cNOR_nls2.2)
+
+(rmse(cNOR_nls2.2, data = cNOR[2:14, ]))
+```
+
+##Graph the predicted (fitted) values (in red, cNOR_nls2.2) on top of the actual experimental values (cNOR replicates 1-3 pooled)
+```{r plotfit_cNOR_nls2.2}
+
+#If I use ggplot to instead of plotfit, I can save the graph (and modify it more easily):
+
+nls2.2_plotfit <- cNOR[2:14, ] %>%
+  dplyr::mutate(delta_p_pred = predict(cNOR_nls2.2))
+
+(nls2.2_plotfit_15N_p <- ggplot(data = nls2.2_plotfit, mapping = 
+         aes(x = `15N_p`))+
+  geom_point(mapping = aes(y = delta_p), color = "#999999",
+             shape = 16)+ #For open circle, use shape = 1
+  geom_point(mapping = aes(y = delta_p_pred), color = "red",
+             shape = 3)+
+  xlab("15N_p")+ ylab("delta_bulk")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())
+)
+  
+(nls2.2_plotfit_f <- ggplot(data = nls2.2_plotfit, mapping = 
+         aes(x = one_minus_f))+
+  geom_point(mapping = aes(y = delta_p), color = "#999999",
+             shape = 16)+ #For open circle, use shape = 1
+  geom_point(mapping = aes(y = delta_p_pred), color = "red",
+             shape = 3)+
+  xlab("1-f")+ ylab("delta_bulk")+
+  xlim(0, 1)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())
+)
+  
+ggsave(nls2.2_plotfit_15N_p, filename = here("graphs/exp_cNOR/nls2.2_plotfit_15N_p.png"), height = 3, width = 5, units = "in")
+
+ggsave(nls2.2_plotfit_f, filename = here("graphs/exp_cNOR/nls2.2_plotfit_f.png"), height = 3, width = 5, units = "in")
+```
+
+##Assess the goodness of fit through residuals for cNOR_nls2.2 (cNOR replicates 1-3 pooled)
+
+Use nlsResiduals() to extract residuals from the nls object, and use plot() to visualize the results.
+```{r cNOR_nls2.2_res, error=TRUE}
+cNOR_nls2.2_res <- nlstools::nlsResiduals(cNOR_nls2.2)
+
+plot(cNOR_nls2.2_res)
+```
+#Plot residuals for nls2.2 as histogram, assess the distribution, and calculate p-value for rho (cNOR replicates 1-3 pooled)
+```{r cNOR_nls2.2_res}
+cNOR_nls2.2_res_df1 <- as.data.frame(cNOR_nls2.2_res$resi1) 
+
+(hist_cNOR_nls2.2_res <- hist(cNOR_nls2.2_res_df1$Residuals))
+
+(cNOR_nls2.2_res_df2 <- tibble(
+  min = min(cNOR_nls2.2_res_df1$Residuals),
+  max = max(cNOR_nls2.2_res_df1$Residuals),
+  sd = sd(cNOR_nls2.2_res_df1$Residuals), #sample standard deviation
+  skewness = skewness(cNOR_nls2.2_res_df1$Residuals),
+  kurtosis = kurtosis(cNOR_nls2.2_res_df1$Residuals),
+  
+  #p-value calculation: null hypothesis is rho = 0.5
+ #t_test_statistic = (rho - rho_null)/se_rho
+  nls_resid_t_test =
+   (summary(cNOR_nls2.2)$coefficients[1, 1] - 0.5)/ summary(cNOR_nls2.2)$coefficients[1, 2],
+ 
+  nls_resid_pval = 2*pt(q = nls_resid_t_test, df = df.residual(cNOR_nls2.2), lower.tail = FALSE)  
+  )
+)
+
+(summary(cNOR_nls2.2_res_df1$Residuals))
+
+write.csv(cNOR_nls2.2_res_df2, here("data/output/exp_cNOR/cNOR_nls2.2_res_df2.csv"), row.names = TRUE)
+
+#Jarque-Bera test for normality
+##Null hypothesis: data follows a normal distribution
+jarque.test(cNOR_nls2.2_res_df1$Residuals)
+```
+
+#Store results for Expanded Rayleigh model 2 (cNOR replicates 1-3 pooled)
+```{r cNOR_nls2.2_tb}
+#Define formula: nls2.2 uses N_p instead of (1-f)*N_s0
+exp_formula_nls2.2 <- as.formula(delta_p ~ 0.5*(
+  delta_alpha +
+    ((1-rho)*`15N_p`/((0.5*N_p) - (1-rho)*`15N_p`)/R_std - 1)*1000
+)
+)
+
+#n = number of loops; in this case, n = 1 (all replicates pooled into one dataset)
+n <- 1
+
+#m = number of models; in this case, m = 1 because we're only using one model (Expanded Rayleigh 1 = standard Rayleigh + nls2.2)
+
+m <- 1
+
+#Make empty table to store results
+cNOR_nls2.2_tb <- blank_tb(n, m)
+
+cNOR_nls2.2_tb <- mutate(cNOR_nls2.2_tb,
+  Model = c(
+    "Expanded Rayleigh 2"
+  ),
+  
+  Data = c(
+    "cNOR Replicates 1-3"
+  ),
+  
+  Replicate = c(
+    "pooled 1-3"
+  )
+) 
+
+for (i in 1:n) {
+  
+  if(i == 1){
+    data <- filter(cNOR, f < 1)
+  } #else if(i == 2){
+    #data <- other_data
+  #}
+
+  #Apply nonlinear model 1.2 (exp_formula_nls2.2) (defined above)
+  nls2.2 <- nls(exp_formula_nls2.2, data = data,
+    start = list(rho = 0.500)
+)
+
+  #Add standard Rayleigh values for bulk delta_p to table
+    cNOR_nls2.2_tb$Multiple_R_squared[i] = cNOR_std_ray$Multiple_R_squared[i]
+    cNOR_nls2.2_tb$RMSE_lm[i] = cNOR_std_ray$RMSE_lm[i]
+  
+    cNOR_nls2.2_tb$lm_delta_p_ncv[i] = cNOR_std_ray$lm_delta_p_ncv[i]
+  
+    cNOR_nls2.2_tb$f_min[i] = cNOR_std_ray$f_min[i]
+    cNOR_nls2.2_tb$f_max[i] = cNOR_std_ray$f_max[i]
+
+    cNOR_nls2.2_tb$delta_s0_meas[i] = "NA"
+    cNOR_nls2.2_tb$se_delta_s0_meas[i] = "NA"
+      
+    cNOR_nls2.2_tb$delta_s0_calc[i] = cNOR_std_ray$delta_s0_calc[i]
+    cNOR_nls2.2_tb$se_delta_s0_calc[i] = cNOR_std_ray$se_delta_s0_calc[i]
+  
+  #Add values from nls2.2 to table
+    cNOR_nls2.2_tb$RMSE_nls[i] = rmse(nls2.2, data = data)
+    
+    cNOR_nls2.2_tb$rho[i] = as.numeric(coef(nls2.2))
+    cNOR_nls2.2_tb$se_rho[i] = summary(nls2.2)$coefficients[1,2]
+  
+    cNOR_nls2.2_tb$tau[i] = mean(data %>% .$tau)
+    cNOR_nls2.2_tb$se_tau[i] = std.error(data %>% .$tau)
+    
+  #Add standard Rayleigh values for bulk delta_p to table  
+    cNOR_nls2.2_tb$epsilon_p[i] = cNOR_std_ray$epsilon_p[i]
+    cNOR_nls2.2_tb$se_epsilon_p[i] = cNOR_std_ray$se_epsilon_p[i]
+    
+    cNOR_nls2.2_tb$ff_p[i] = cNOR_std_ray$ff_p[i]
+    cNOR_nls2.2_tb$se_ff_p[i] = cNOR_std_ray$se_ff_p[i]
+    
+  #Add values from nls2.2 to table
+    ## ff_alpha = (rho/tau)*ff_p
+    cNOR_nls2.2_tb$ff_alpha[i] =
+      (cNOR_nls2.2_tb$rho[i]/
+         cNOR_nls2.2_tb$tau[i])*cNOR_nls2.2_tb$ff_p[i]
+    
+    ##se_ff_alpha = sqrt((ff_p/tau*se_rho)^2 + (-rho*ff_p/tau^2*se_tau)^2+ (rho/tau*se_ff_p)^2)
+    cNOR_nls2.2_tb$se_ff_alpha[i] =
+      sqrt((cNOR_nls2.2_tb$ff_p[i]/cNOR_nls2.2_tb$tau[i]*cNOR_nls2.2_tb$se_rho[i])^2 + (-cNOR_nls2.2_tb$rho[i]*cNOR_nls2.2_tb$ff_p[i]/cNOR_nls2.2_tb$tau[i]^2*cNOR_nls2.2_tb$se_tau[i])^2+ (cNOR_nls2.2_tb$rho[i]/cNOR_nls2.2_tb$tau[i]*cNOR_nls2.2_tb$se_ff_p[i])^2)
+    
+    ##ff_beta = (1-rho)/(1-tau)*ff_p
+    cNOR_nls2.2_tb$ff_beta[i] = (1-cNOR_nls2.2_tb$rho[i])/
+      (1-cNOR_nls2.2_tb$tau[i])*cNOR_nls2.2_tb$ff_p[i]
+    
+    
+    ##se_ff_beta = sqrt((-ff_p/(1-tau)*se_rho)^2 + ((1-rho)*ff_p/(1-tau)^2*se_tau)^2 + ((1-rho)/(1-tau)*se_ff_p)^2)
+    cNOR_nls2.2_tb$se_ff_beta[i] = sqrt((-cNOR_nls2.2_tb$ff_p[i]/(1-cNOR_nls2.2_tb$tau[i])*cNOR_nls2.2_tb$se_rho[i])^2 + ((1-cNOR_nls2.2_tb$rho[i])*cNOR_nls2.2_tb$ff_p[i]/(1-cNOR_nls2.2_tb$tau[i])^2*cNOR_nls2.2_tb$se_tau[i])^2 + ((1-cNOR_nls2.2_tb$rho[i])/(1-cNOR_nls2.2_tb$tau[i])*cNOR_nls2.2_tb$se_ff_p[i])^2)   
+ 
+    ##epsilon_alpha = 1000*ff_alpha
+    cNOR_nls2.2_tb$epsilon_alpha[i] =
+      1000*(cNOR_nls2.2_tb$ff_alpha[i] - 1)
+    
+    ##se_epsilon_alpha = 1000*se_ff_alpha
+    cNOR_nls2.2_tb$se_epsilon_alpha[i] = 1000*cNOR_nls2.2_tb$se_ff_alpha[i]
+    
+    ##epsilon_beta = 1000*(ff_beta -1)
+    cNOR_nls2.2_tb$epsilon_beta[i] = 1000*(cNOR_nls2.2_tb$ff_beta[i] -1)
+    
+    ##se_epsilon_beta = 1000*se_ff_beta
+    cNOR_nls2.2_tb$se_epsilon_beta[i] = 1000*cNOR_nls2.2_tb$se_ff_beta[i]
+    
+    ##KIE = 1/ff
+    ##se_KIE = abs(-1/(ff)^2*se_ff)
+    cNOR_nls2.2_tb$KIE_p[i] = 1/cNOR_nls2.2_tb$ff_p[i]
+    cNOR_nls2.2_tb$se_KIE_p[i] = abs(-1/(cNOR_nls2.2_tb$ff_p[i])^2*cNOR_nls2.2_tb$se_ff_p[i])
+    
+    cNOR_nls2.2_tb$KIE_alpha[i] = 1/cNOR_nls2.2_tb$ff_alpha[i]
+    cNOR_nls2.2_tb$se_KIE_alpha[i] = abs(-1/(cNOR_nls2.2_tb$ff_alpha[i])^2*cNOR_nls2.2_tb$se_ff_alpha[i])
+    
+    cNOR_nls2.2_tb$KIE_beta[i] = 1/cNOR_nls2.2_tb$ff_beta[i]
+    cNOR_nls2.2_tb$se_KIE_beta[i] = abs(-1/(cNOR_nls2.2_tb$ff_beta[i])^2*cNOR_nls2.2_tb$se_ff_beta[i])
+
+    #add p-value for epsilon_p (null hypothesis: epsilon = 0)
+    cNOR_nls2.2_tb$pval_epsilon_p[i] = cNOR_std_ray$pval_epsilon_p[i]    
+    #add p-value for rho (null hpothesis: rho = 0.5)
+    ##t_test_statistic = (rho - rho_null)/se_rho
+  nls_resid_t_test =
+   (summary(cNOR_nls2.2)$coefficients[1, 1] - 0.5)/ summary(cNOR_nls2.2)$coefficients[1, 2]
+ ##convert t-test statistic to p-value using pt() and multiply by 2 for two-sided test p-value
+  cNOR_nls2.2_tb$pval_rho[i] = 2*pt(q = nls_resid_t_test, df = df.residual(cNOR_nls2.2), lower.tail = FALSE)
+    
+  #Calculate p-value for average tau. Null hypothesis: tau = 0.5
+  cNOR_nls2.2_tb$pval_tau[i] = t.test(data$tau, mu = 0.5)$p.value
+}
+
+(cNOR_nls2.2_tb)
+```
+
+#Combine standard Rayleigh and Expanded Rayleigh tables to make a summary table
+```{r cNOR_summary}
+
+(cNOR_summary <- 
+
+  rbind(
+  cNOR_std_ray, #standard Rayleigh applied to delta_p, delta_alpha, and delta_beta
+  cNOR_nls1.2_tb, #Expanded Rayleigh 1 (std. Rayleigh: delta_p; nls1.2: delta_alpha and delta_beta
+  cNOR_nls2.2_tb #Expanded Rayleigh 2 (std. Rayleigh; delta_p; nls2.2: delta_alpha and delta_beta
+)
+)
+
+write.csv(cNOR_summary, here("data/output/exp_cNOR/cNOR_summary.csv"), row.names = TRUE)
+```
+
+#cNOR_summary_2: Paste mean +/- standard error
+
+When the .csv file is opened in Excel, a funky symbol is included with the +/- symbol, but that can be removed with find and replace.
+```{r cNOR_summary_2}
+
+(cNOR_summary_2 <- cNOR_summary %>% mutate(
+  Multiple_R_squared =
+    paste(round(as.numeric(cNOR_summary$Multiple_R_squared), 2)),
+  
+  RMSE_lm =
+    paste(round(as.numeric(cNOR_summary$RMSE_lm), 2) 
+  ),
+  
+  lm_delta_p_ncv =
+    paste(round(as.numeric(cNOR_summary$lm_delta_p_ncv), 2) 
+  ),  
+  
+  RMSE_nls = c(paste(cNOR_summary$RMSE_nls[1]),
+    paste(round(as.numeric(cNOR_summary$RMSE_nls[2:3]), 2)
+  )
+  ),
+  
+  f_min = 
+    paste(round(as.numeric(cNOR_summary$f_min), 2)
+  ),
+  
+  f_max = 
+    paste(round(as.numeric(cNOR_summary$f_max), 2)
+  ),
+
+  delta_s0_meas =
+    paste(round(as.numeric(cNOR_summary$delta_s0_meas), 1)),
+  
+  delta_s0_calc = c(
+    paste(round(as.numeric(cNOR_summary$delta_s0_calc), 1), "\u00B1", round(as.numeric(cNOR_summary$se_delta_s0_calc), 1))
+  ),
+  
+  rho = c(paste(cNOR_summary$rho[1]),
+    paste(round(as.numeric(cNOR_summary$rho[2:3]), 4), "\u00B1", round(as.numeric(cNOR_summary$se_rho[2:3]), 4)
+  )
+  ),
+
+  tau = c(paste(cNOR_summary$tau[1]),
+    paste(round(as.numeric(cNOR_summary$tau[2:3]), 5), "\u00B1", round(as.numeric(cNOR_summary$se_tau[2:3]), 8)
+  )
+  ),
+   
+  epsilon_p = c(
+    paste(round(as.numeric(cNOR_summary$epsilon_p), 1), "\u00B1", round(as.numeric(cNOR_summary$se_epsilon_p), 1))
+  ),  
+  
+  epsilon_alpha = c(
+    paste(round(as.numeric(cNOR_summary$epsilon_alpha), 1), "\u00B1", round(as.numeric(cNOR_summary$se_epsilon_alpha), 1))
+  ),  
+  
+  epsilon_beta = c(
+    paste(round(as.numeric(cNOR_summary$epsilon_beta), 1), "\u00B1", round(as.numeric(cNOR_summary$se_epsilon_beta), 1))
+  ),  
+
+  ff_p = c(
+    paste(round(as.numeric(cNOR_summary$ff_p), 4), "\u00B1", round(as.numeric(cNOR_summary$se_ff_p), 4))
+  ),
+  
+  ff_alpha = c(
+    paste(round(as.numeric(cNOR_summary$ff_alpha), 4), "\u00B1", round(as.numeric(cNOR_summary$se_ff_alpha), 4))
+  ),  
+  
+  ff_beta = c(
+    paste(round(as.numeric(cNOR_summary$ff_beta), 4), "\u00B1", round(as.numeric(cNOR_summary$se_ff_beta), 4))
+  ),
+  
+  KIE_p = c(
+    paste(round(as.numeric(cNOR_summary$KIE_p), 4), "\u00B1", round(as.numeric(cNOR_summary$se_KIE_p), 4))
+  ),
+  
+  KIE_alpha = c(
+    paste(round(as.numeric(cNOR_summary$KIE_alpha), 4), "\u00B1", round(as.numeric(cNOR_summary$se_KIE_alpha), 4))
+  ),  
+  
+  KIE_beta = c(
+    paste(round(as.numeric(cNOR_summary$KIE_beta), 4), "\u00B1", round(as.numeric(cNOR_summary$se_KIE_beta), 4))
+  ),
+  
+  pval_epsilon_p = c(
+    paste(round(as.numeric(cNOR_summary$pval_epsilon_p[1:3]), 8))
+  ),
+  
+  pval_rho = c(paste(cNOR_summary$pval_rho[1]),
+    paste(round(as.numeric(cNOR_summary$pval_rho[2:3]), 4))
+  ),
+  
+  pval_tau = c(paste(cNOR_summary$pval_tau[1]),
+    paste(round(as.numeric(cNOR_summary$pval_tau[2:3]), 4))
+  )
+  
+)%>%
+    dplyr::select(-delta_s0_meas, -se_delta_s0_meas, -se_delta_s0_calc, -se_rho, -se_tau, -se_epsilon_p, -se_epsilon_alpha, -se_epsilon_beta, -se_ff_p, -se_ff_alpha, -se_ff_beta, -se_KIE_p, -se_KIE_alpha, -se_KIE_beta)
+)
+
+write.csv(cNOR_summary_2, here("data/output/exp_cNOR/cNOR_summary_2.csv"), row.names = TRUE)
+```
+
+#Table 1: cNOR_summary_ER1: Make summary table w/ Expanded Rayleigh model 1 values.
+
+Put N_bulk, N_alpha, and N_beta values in separate rows.
+```{r cNOR_summary_ER1}
+(cNOR_summary_ER1 <- tibble(
+  Measurement = c(
+    "N_bulk", "N_alpha", "N_beta"
+  ),
+  
+  #Add Expanded Rayleigh model 1 values (from row 2 in cNOR_summary_2) +/- standard error
+  epsilon = c(
+    cNOR_summary_2$epsilon_p[2],
+    cNOR_summary_2$epsilon_alpha[2],
+    cNOR_summary_2$epsilon_beta[2]),
+  
+  KIE = c(
+    cNOR_summary_2$KIE_p[2],
+    cNOR_summary_2$KIE_alpha[2],
+    cNOR_summary_2$KIE_beta[2]
+  ),
+  
+  #Add R_squared value (from standard Rayleigh model applied to N_bulk)
+  Multiple_R_squared = c(
+    rep(cNOR_summary_2$Multiple_R_squared[2], 3)
+  ),
+  
+  #Add the RMSE value for the linear model (linear standard Rayleigh model where delta_p is the dependent variable)
+  RMSE_lm = c(
+    rep(cNOR_summary_2$RMSE_lm[2], 3)
+  ),
+  
+  #Add the RMSE value for the nonlinear model (nonlinear part of Expanded Rayleigh model 1, where delta_p is the dependent variable)
+  RMSE_nls = c(
+    "NA", #nonlinear model not used to calculate N_bulk values
+    rep(cNOR_summary_2$RMSE_nls[2], 2)
+  ),
+  
+  #Add p-value for epsilon_p (null hypothesis: epsilon_p = 0)
+  pval_epsilon_p = c(
+    rep(cNOR_summary_2$pval_epsilon_p[2], 3)    
+  ),
+  
+  #Add p-value for rho (null hypothesis: rho = 0.5)
+  pval_rho = c(
+    "NA", #rho is not used to determine N_bulk values
+    rep(cNOR_summary_2$pval_rho[2], 2)
+  ),
+  
+  #Add p-value for tau (null hypothesis: tau = 0.5)
+  pval_tau = c(
+    "NA", #tau is not used to determine N_bulk values
+    rep(cNOR_summary_2$pval_tau[2], 2)
+  )
+  
+))
+
+write.csv(cNOR_summary_ER1, here("data/output/exp_cNOR/cNOR_summary_ER1.csv"), row.names = TRUE)
+```
+
+#Bootstrap analysis of standard Rayleigh equation, exp_nls1, and exp_nls2.
+
+Goal: Do bootstrap analysis to compare the fit of the standard Rayleigh equation and the two nonlinear models.
+
+1.Create a subsample by drawing 13 samples, with replacement, from the 13 experimental observations. (Outer loop)
+
+2. Analyze every subsample with each different model. For every model:
+
+  - Extract the RMSE
+  
+  - Extract coefficients
+  
+  - Extract predicted values
+  
+  - Store the results in a dataframe
+  
+3. Compare average RMSE values, predicted rho values for the two nonlinear models
+
+##Example bootstrap loop
+```{r loop_example}
+#Generate example dataset.
+data1 <- tibble(
+  x = seq(from = 1, to = 13, by =1),
+  y = x + rnorm(n=13, mean = 0, sd = 1)
+)
+
+#Make an empty tibble to store the results for each subsample tested on each model.
+
+bootstrap1 <- tibble(
+  slope = vector(length = 10, mode = "numeric"),
+  intercept = vector(length = 10, mode = "numeric"),
+  RMSE = vector(length = 10, mode = "numeric")
+)
+
+#Use a for loop to generate 10 subsamples.
+#For each subsample, fit a linear regression model (lm), and extract the coeffecients and RMSE value.
+
+for (i in 1:nrow(bootstrap1)) {
+  x_sub <- sample(data1$x, size = 13, replace = TRUE)
+  subsample <- data1[x_sub, ]
+  m1 <- lm(y~x, data = subsample)
+  bootstrap1$slope[i] = summary(m1)$coefficients[2,1]
+  bootstrap1$intercept[i] = summary(m1)$coefficients[1,1]
+  bootstrap1$RMSE[i] = rmse(model = m1, data = subsample)
+}
+
+```
+
+
+#Make an empty table to store the results from 1000 bootstrapped samples.
+```{r blank_cNOR_boot}
+# n = number of times simulation is repeated (loops)
+
+# m = number of models
+
+#Make an empty tibble to store the results for each simulation tested on each model.
+#Ray = standard Rayleigh model
+
+blank_cNOR_boot <- function(n, m){
+  tibble(
+  Multiple_R_squared = vector(length = n*m, mode = "numeric"),
+  RMSE_lm = vector(length = n*m, mode = "numeric"),
+  
+  lm_delta_p_ncv = vector(length = n*m, mode = "numeric"),
+  
+  skew = vector(length = n*m, mode = "numeric"),
+  skew_factor = vector(length = n*m, mode = "numeric"),
+  lm_skew_factor = vector(length = n*m, mode = "numeric"),
+  kurt = vector(length = n*m, mode = "numeric"),  
+  
+  f_min = vector(length = n*m, mode = "numeric"),
+  f_max = vector(length = n*m, mode = "numeric"),
+  
+  delta_s0_calc = vector(length = n*m, mode = "numeric"),
+  
+  RMSE_nls = vector(length = n*m, mode = "numeric"),
+  
+  rho = vector(length = n*m, mode = "numeric"),
+  tau = vector(length = n*m, mode = "numeric"),
+  
+  epsilon_p = vector(length = n*m, mode = "numeric"),
+  
+  RMSE_delta_alpha = vector(length = n*m, mode = "numeric"),
+  R_squared_delta_alpha = vector(length = n*m, mode = "numeric"),
+  epsilon_alpha = vector(length = n*m, mode = "numeric"),
+  
+  RMSE_delta_beta = vector(length = n*m, mode = "numeric"),
+  R_squared_delta_beta = vector(length = n*m, mode = "numeric"),
+  epsilon_beta = vector(length = n*m, mode = "numeric"),
+  
+  ff_p = vector(length = n*m, mode = "numeric"),
+  ff_alpha = vector(length = n*m, mode = "numeric"),
+  ff_beta = vector(length = n*m, mode = "numeric"),
+  
+  KIE_p = vector(length = n*m, mode = "numeric"),
+  KIE_alpha = vector(length = n*m, mode = "numeric"),
+  KIE_beta = vector(length = n*m, mode = "numeric"),
+  
+  #add p-values for each component of the Expanded Rayleigh model
+  ##null hypothesis: no kinetic isotope effect (espilon = 0 or rho = 0.5 or tau = 0.5)
+  pval = vector(length = n*m, mode = "numeric"),
+  
+  pval_slope_delta_alpha = vector(length = n*m, mode = "numeric"),
+  pval_slope_delta_beta = vector(length = n*m, mode = "numeric"),
+  
+  ##null hypothesis: mean tau = mean tau from the original dataset (cNOR)
+  pval_tau_mean = vector(length = n*m, mode = "numeric")
+)
+}
+```
+
+
+#Bootstrap loop for cNOR data - using lm, nls1.2, and nls2.2
+```{r cNOR_boot_1}
+#Display the algorithm used for random number generation.
+RNGkind()
+
+#set seed
+set.seed(313)
+
+#Make an empty tibble to store the results for each subsample tested on each model.
+#Ray = standard Rayleigh model
+
+#R_std for atmospheric N2 = 0.0036765
+#R_std = 0.0036765
+
+#Define nonlinear model 1.2 (nls1.2) (written in terms of delta, (1-f)*N_s0 replaced with N_p)
+exp_formula_nls1.2 <- as.formula(delta_p ~ 0.5*(
+  (rho*`15N_p`/((0.5*N_p) - rho*`15N_p`)/R_std - 1)*1000 +
+    delta_beta
+)
+)
+
+#Define nonlinear model 2.2 (nls2.2) (written in terms of delta, (1-f)*N_s0 replaced with N_p)
+exp_formula_nls2.2 <- as.formula(delta_p ~ 0.5*(
+  delta_alpha +
+    ((1-rho)*`15N_p`/((0.5*N_p) - (1-rho)*`15N_p`)/R_std - 1)*1000
+)
+)
+
+# n = number of subsamples (loops)
+n = 1000
+
+# m = number of models
+m = 4
+
+#Make empty table to store the results from 1000 bootstrapped samples
+cNOR_boot_1 <- blank_cNOR_boot(n = n, m = m)
+
+#Remove time_0 row from table used for sampling
+cNOR_2 <- cNOR %>% dplyr::filter(f < 1)  #this drops "NA" values
+
+#Use a for loop to generate n subsamples.
+#For each subsample, fit the standard Rayleigh equation (linear regression model (lm)) and the nonlinear models (exp_nls1 and exp_nls2), and extract the coeffecients and RMSE value.
+
+for (i in 1:n) {
+  subsample <- cNOR_2[sample(1:13, size = 13, replace = TRUE), ]
+  
+  #Apply standard Rayleigh model where x = -flnf/(1-f) and y = delta_p
+  lm_delta_p <- lm(delta_p ~ `-flnf/(1-f)`, data = subsample)
+  cNOR_boot_1$Multiple_R_squared[i] = summary(lm_delta_p)$r.squared
+  cNOR_boot_1$RMSE_lm[i] = rmse(model = lm_delta_p, 
+                                     data = subsample)
+  
+  #Treat replicate as factor, add lm residuals to data table.
+  subsample <- subsample %>% mutate(
+  replicate = as.factor(.$Name),
+  lm_delta_p_residuals = lm_delta_p$residuals
+)
+  lm_delta_p_ncv <- ncvTest(lm_delta_p)
+  cNOR_boot_1$lm_delta_p_ncv[i] = lm_delta_p_ncv$p
+  
+  #skewness and kurtosis for linear standard Rayleigh model where y = delta_p
+  cNOR_boot_1$skew[i] = skewness(lm_delta_p$residuals)
+  
+  if(cNOR_boot_1$skew[i] < -0.5) {
+    cNOR_boot_1$skew_factor[i] = 2 #left-skew = 2
+  } else if(cNOR_boot_1$skew[i] >= -0.5 & cNOR_boot_1$skew[i] <= 0.5) {
+    cNOR_boot_1$skew_factor[i] = 1 #no skew = 1
+  } else if (cNOR_boot_1$skew[i] > 0.5) {
+    cNOR_boot_1$skew_factor[i] = 3 #right-skew = 3
+  }
+  
+  cNOR_boot_1$lm_skew_factor[i] = cNOR_boot_1$skew_factor[i]
+  
+  cNOR_boot_1$kurt[i] = kurtosis(lm_delta_p$residuals)  
+  
+  cNOR_boot_1$f_min[i] = min(subsample$f)
+  cNOR_boot_1$f_max[i] = max(subsample$f)
+  
+  cNOR_boot_1$delta_s0_calc[i] = summary(lm_delta_p)$coefficients[1,1]
+  cNOR_boot_1$epsilon_p[i] = summary(lm_delta_p)$coefficients[2,1]
+  
+  #Apply standard Rayleigh model where x = -flnf/(1-f) and y = delta_alpha
+  lm_delta_alpha <- lm(delta_alpha ~ `-flnf/(1-f)`, 
+                           data = subsample)
+  
+  cNOR_boot_1$R_squared_delta_alpha[i] = summary(lm_delta_alpha)$r.squared
+  cNOR_boot_1$RMSE_delta_alpha[i] = rmse(model = lm_delta_alpha, 
+                                         data = subsample)
+  cNOR_boot_1$epsilon_alpha[i] = summary(lm_delta_alpha)$coefficients[2,1]
+  
+  #Apply standard Rayleigh model where x = -flnf/(1-f) and y = delta_beta  
+  lm_delta_beta <- lm(delta_beta ~ `-flnf/(1-f)`, data = subsample)
+  
+  cNOR_boot_1$R_squared_delta_beta[i] = summary(lm_delta_beta)$r.squared
+  cNOR_boot_1$RMSE_delta_beta[i] = rmse(model = lm_delta_beta, 
+                                        data = subsample)
+  cNOR_boot_1$epsilon_beta[i] = summary(lm_delta_beta)$coefficients[2,1]
+  
+  #Convert standard Rayleigh epsilon_p to fractionation factor (ff_p)
+  cNOR_boot_1$ff_p[i] = 1 + lm_delta_p$coefficients[2]/1000
+  
+  #Convert standard Rayleigh epsilon_alpha to fractionation factor (ff_alpha)
+  cNOR_boot_1$ff_alpha[i] = 1 + lm_delta_alpha$coefficients[2]/1000
+  
+  #Convert standard Rayleigh epsilon_beta to fractionation factor (ff_beta)
+  cNOR_boot_1$ff_beta[i] = 1 + lm_delta_beta$coefficients[2]/1000
+  
+  #Convert standard Rayleigh epsilon_p to KIE (KIE_p)
+  cNOR_boot_1$KIE_p[i] = 1000/
+    (as.numeric(coef(lm_delta_p)[2]) +1000)
+   
+   #Convert standard Rayleigh epsilon_alpha to KIE (KIE_alpha)
+   cNOR_boot_1$KIE_alpha[i] = 1000/
+    (as.numeric(coef(lm_delta_alpha)[2]) +1000)
+   
+   #Convert standard Rayleigh epsilon_beta to KIE (KIE_beta)
+   cNOR_boot_1$KIE_beta[i] = 1000/
+    (as.numeric(coef(lm_delta_beta)[2]) +1000)
+   
+  #add p-value for epsilon_p from standard Rayleigh equation (slope of linear model)
+  cNOR_boot_1$pval[i] = summary(lm_delta_p)$coefficients[2, 4]
+  
+  #Add p-value for slope of linear Rayleigh where y = delta_alpha or delta_beta
+  cNOR_boot_1$pval_slope_delta_alpha[i] = summary(lm_delta_alpha)$coefficients[2, 4]
+  cNOR_boot_1$pval_slope_delta_beta[i] = summary(lm_delta_beta)$coefficients[2, 4]
+  
+  #Apply nonlinear model 1.2 (exp_nls1.2) (defined above)
+  exp_nls1.2 <- nls(exp_formula_nls1.2, data = subsample,
+                      start = list(rho = 0.500))
+  
+  #Skewness and kurtosis for exp_nls1.2
+  exp_nls1.2_delta_p_res <- nlsResiduals(exp_nls1.2)
+  
+  subsample <- subsample %>% mutate(
+  exp_nls1.2_delta_p_residuals = exp_nls1.2_delta_p_res$resi1[ ,2]
+)
+  
+  cNOR_boot_1$skew[(n + i)] = skewness(subsample$exp_nls1.2_delta_p_residuals)
+  
+    if(cNOR_boot_1$skew[(n + i)] < -0.5) {
+    cNOR_boot_1$skew_factor[(n + i)] = 2 #left-skew = 2
+  } else if(cNOR_boot_1$skew[(n + i)] >= -0.5 & cNOR_boot_1$skew[(n + i)] <= 0.5) {
+    cNOR_boot_1$skew_factor[(n + i)] = 1 #no skew = 1
+  } else if (cNOR_boot_1$skew[(n + i)] > 0.5) {
+    cNOR_boot_1$skew_factor[(n + i)] = 3 #right-skew = 3
+  }
+  
+  cNOR_boot_1$kurt[(n + i)] = kurtosis(subsample$exp_nls1.2_delta_p_residuals)
+  
+  #Add lm_skew_factor to nls1.2 rows for indexing (same for all models)
+  cNOR_boot_1$lm_skew_factor[(n + i)] = cNOR_boot_1$skew_factor[i]  
+  
+  cNOR_boot_1$RMSE_nls[(n + i)] = rmse(exp_nls1.2, data = subsample)
+  
+  cNOR_boot_1$rho[(n + i)] = coef(exp_nls1.2)
+  cNOR_boot_1$tau[(n + i)] = mean(subsample$tau)
+  
+  #Add min and max values to table (same for all three models)
+  cNOR_boot_1$f_min[(n + i)] = min(subsample$f)
+  cNOR_boot_1$f_max[(n + i)] = max(subsample$f)  
+  
+  cNOR_boot_1$ff_alpha[(n + i)] = (coef(exp_nls1.2)/mean(subsample$tau))*cNOR_boot_1$ff_p[i]
+  cNOR_boot_1$epsilon_alpha[(n + i)] = 1000*(cNOR_boot_1$ff_alpha[(n + i)] - 1)
+  cNOR_boot_1$KIE_alpha[(n + i)] = 1000/(cNOR_boot_1$epsilon_alpha[(n + i)] +1000)
+  
+  cNOR_boot_1$ff_beta[(n + i)] = (1-coef(exp_nls1.2))/(1-mean(subsample$tau))*cNOR_boot_1$ff_p[i]
+  cNOR_boot_1$epsilon_beta[(n + i)] = 1000*(cNOR_boot_1$ff_beta[(n + i)] -1)
+  cNOR_boot_1$KIE_beta[(n + i)] = 1000/(cNOR_boot_1$epsilon_beta[(n + i)] +1000)
+  
+  #add p-value for rho (parameter estimated from nls1.2; null hypothesis: rho = 0.5)
+  t_test = (summary(nls1.2)$coefficients[1, 1] - 0.5)/
+    summary(nls1.2)$coefficients[1, 2]
+  cNOR_boot_1$pval[(n + i)] = 2*pt(q = t_test, df = df.residual(nls1.2), lower.tail = FALSE)  
+  
+  #Apply nonlinear model 2.2 (exp_nls2.2) (defined above)
+  exp_nls2.2 <- nls(exp_formula_nls2.2, data = subsample,
+                      start = list(rho = 0.500))
+  
+  #Skewness and kurtosis for exp_nls2.2
+  exp_nls2.2_delta_p_res <- nlsResiduals(exp_nls2.2)
+  
+  subsample <- subsample %>% mutate(
+  exp_nls2.2_delta_p_residuals = exp_nls2.2_delta_p_res$resi1[ ,2]
+)
+  
+  cNOR_boot_1$skew[(2*n + i)] = skewness(subsample$exp_nls2.2_delta_p_residuals)
+  
+    if(cNOR_boot_1$skew[(2*n + i)] < -0.5) {
+    cNOR_boot_1$skew_factor[(2*n + i)] = 2 #left-skew = 2
+  } else if(cNOR_boot_1$skew[(2*n + i)] >= -0.5 & cNOR_boot_1$skew[(2*n + i)] <= 0.5) {
+    cNOR_boot_1$skew_factor[(2*n + i)] = 1 #no skew = 1
+  } else if (cNOR_boot_1$skew[(2*n + i)] > 0.5) {
+    cNOR_boot_1$skew_factor[(2*n + i)] = 3 #right-skew = 3
+  }
+  
+  cNOR_boot_1$kurt[(2*n + i)] = kurtosis(subsample$exp_nls2.2_delta_p_residuals)
+  
+  #Add lm_skew_factor to nls2.2 rows for indexing (same for all models)
+  cNOR_boot_1$lm_skew_factor[(2*n + i)] = cNOR_boot_1$skew_factor[i]  
+  
+  cNOR_boot_1$RMSE_nls[(2*n + i)] = rmse(exp_nls2.2, data = subsample)
+  cNOR_boot_1$rho[(2*n + i)] = coef(exp_nls2.2)
+  
+  cNOR_boot_1$tau[(2*n + i)] = mean(subsample$tau)
+  
+  #Add min and max values to table (same for all three models)
+  cNOR_boot_1$f_min[(2*n + i)] = min(subsample$f)
+  cNOR_boot_1$f_max[(2*n + i)] = max(subsample$f)  
+  
+  cNOR_boot_1$ff_alpha[(2*n + i)] = (coef(exp_nls2.2)/mean(subsample$tau))*cNOR_boot_1$ff_p[i]
+  cNOR_boot_1$epsilon_alpha[(2*n + i)] = 1000*(cNOR_boot_1$ff_alpha[(2*n + i)] - 1)
+  cNOR_boot_1$KIE_alpha[(2*n + i)] = 1000/(cNOR_boot_1$epsilon_alpha[(2*n + i)] +1000)  
+  
+  cNOR_boot_1$ff_beta[(2*n + i)] = (1-coef(exp_nls2.2))/(1-mean(subsample$tau))*cNOR_boot_1$ff_p[i]
+  cNOR_boot_1$epsilon_beta[(2*n + i)] = 1000*(cNOR_boot_1$ff_beta[(2*n + i)] -1)
+  cNOR_boot_1$KIE_beta[(2*n + i)] = 1000/(cNOR_boot_1$epsilon_beta[(2*n + i)] +1000)
+  
+  #add p-value for rho (parameter estimated from nls2.2; null hypothesis: rho = 0.5)
+  t_test = (summary(nls2.2)$coefficients[1, 1] - 0.5)/
+    summary(nls2.2)$coefficients[1, 2]
+  cNOR_boot_1$pval[(2*n + i)] = 2*pt(q = t_test, df = df.residual(nls2.2), lower.tail = FALSE)
+  
+  #average tau "model"
+  #Calculate tau (same for all three models)
+  cNOR_boot_1$tau[(3*n + i)] = mean(subsample$tau)
+  
+  #Add min and max values to table (same for all three models)
+  cNOR_boot_1$f_min[(3*n + i)] = min(subsample$f)
+  cNOR_boot_1$f_max[(3*n + i)] = max(subsample$f)  
+  
+  cNOR_boot_1$skew[(3*n + i)] = skewness(subsample$tau)
+  
+  if(cNOR_boot_1$skew[(3*n + i)] < -0.5) {
+    cNOR_boot_1$skew_factor[(3*n + i)] = 2 #left-skew = 2
+  } else if(cNOR_boot_1$skew[(3*n + i)] >= -0.5 & cNOR_boot_1$skew[(3*n + i)] <= 0.5) {
+    cNOR_boot_1$skew_factor[(3*n + i)] = 1 #no skew = 1
+  } else if (cNOR_boot_1$skew[(3*n + i)] > 0.5) {
+    cNOR_boot_1$skew_factor[(3*n + i)] = 3 #right-skew = 3
+  }  
+    
+  cNOR_boot_1$kurt[(3*n + i)] = kurtosis(subsample$tau)
+  
+  #Add lm_skew_factor to average tau rows for indexing (same for all models)
+  cNOR_boot_1$lm_skew_factor[(3*n + i)] = cNOR_boot_1$skew_factor[i]    
+  
+  #Calculate p-value for average tau. Null hypothesis: tau = 0.5
+  cNOR_boot_1$pval[(3*n + i)] = t.test(subsample$tau, mu = 0.5)$p.value
+  
+  #Calculate pval_tau_mean. Null hypothesis: tau = mean tau value from original dataset (cNOR)
+  cNOR_boot_1$pval_tau_mean[(3*n + i)] = t.test(subsample$tau, mu = mean(cNOR$tau, na.rm = TRUE))$p.value  
+}
+
+(mean(cNOR_boot_1$RMSE_lm[1:n]))
+
+(mean(cNOR_boot_1$RMSE_lm[(n+1):(n+n)]))
+
+(mean(cNOR_boot_1$RMSE_lm[(2*n+1):(2*n+n)]))
+```
+
+##Summary table for cNOR_boot_1
+```{r avg_cNOR_boot_1}
+avg_cNOR_boot_1 <- tibble(
+  mean_Ray = colMeans(cNOR_boot_1[1:n, ]),
+  mean_nls1 = colMeans(cNOR_boot_1[(n+1):(n+n), ]),
+  mean_nls2 = colMeans(cNOR_boot_1[(2*n+1):(2*n+n), ]),
+  mean_tau = colMeans(cNOR_boot_1[(3*n + 1):(3*n + n), ]),  
+  sd_Ray = sapply(cNOR_boot_1[1:n, ], sd),
+  sd_nls1 = sapply(cNOR_boot_1[(n + 1):(n + n), ], sd),
+  sd_nls2 = sapply(cNOR_boot_1[(2*n + 1):(2*n + n), ], sd),
+  sd_tau = sapply(cNOR_boot_1[(3*n + 1):(3*n + n), ], sd)   
+) %>% t()  #Flip (transpose) table
+
+colnames(avg_cNOR_boot_1) <- colnames(cNOR_boot_1)
+
+(avg_cNOR_boot_1 <- as_tibble(avg_cNOR_boot_1, rownames = NA))
+
+write.csv(avg_cNOR_boot_1, here("data/output/exp_cNOR/avg_cNOR_boot_1.csv"), row.names = TRUE)
+```
+
+#Make empty summary table to store the average results from 1000 simulations for Expanded Rayleigh 1-2.
+
+Remove or rename model-specific values (rmse...)
+
+#Remove RMSE_delta_alpha and RMSE_delta_beta
+```{r blank_boot_summary}
+
+blank_boot_summary <- function(n) {
+  tibble(
+  Model = vector(length = n, mode = "expression"),
+  Data = vector(length = n, mode = "expression"),
+  Replicate = vector(length = n, mode = "expression"),
+  Subset = vector(length = n, mode = "expression"),  
+    
+  Multiple_R_squared = vector(length = n, mode = "numeric"),
+  sd_R_squared = vector(length = n, mode = "numeric"),
+  
+  lm_RMSE = vector(length = n, mode = "numeric"),
+  sd_lm_RMSE = vector(length = n, mode = "numeric"),
+  
+  nls_RMSE = vector(length = n, mode = "numeric"),
+  sd_nls_RMSE = vector(length = n, mode = "numeric"),
+  
+  f_min = vector(length = n, mode = "numeric"),
+  sd_f_min = vector(length = n, mode = "numeric"),
+  
+  f_max = vector(length = n, mode = "numeric"),
+  sd_f_max = vector(length = n, mode = "numeric"),
+  
+  delta_s0 = vector(length = n, mode = "numeric"),
+  sd_delta_s0 = vector(length = n, mode = "numeric"),
+  
+  rho = vector(length = n, mode = "numeric"),
+  sd_rho = vector(length = n, mode = "numeric"),
+  
+  tau = vector(length = n, mode = "numeric"),
+  sd_tau = vector(length = n, mode = "numeric"),
+  
+  epsilon_p = vector(length = n, mode = "numeric"),
+  sd_epsilon_p = vector(length = n, mode = "numeric"),
+  
+  epsilon_alpha = vector(length = n, mode = "numeric"),
+  sd_epsilon_alpha = vector(length = n, mode = "numeric"),
+  
+  epsilon_beta = vector(length = n, mode = "numeric"),
+  sd_epsilon_beta = vector(length = n, mode = "numeric"),  
+  
+  ff_p = vector(length = n, mode = "numeric"),
+  sd_ff_p = vector(length = n, mode = "numeric"),
+  ff_alpha = vector(length = n, mode = "numeric"),
+  sd_ff_alpha = vector(length = n, mode = "numeric"),
+  ff_beta = vector(length = n, mode = "numeric"),
+  sd_ff_beta = vector(length = n, mode = "numeric"),
+  
+  KIE_p = vector(length = n, mode = "numeric"),
+  sd_KIE_p = vector(length = n, mode = "numeric"),
+  KIE_alpha = vector(length = n, mode = "numeric"),
+  sd_KIE_alpha = vector(length = n, mode = "numeric"),
+  KIE_beta = vector(length = n, mode = "numeric"),
+  sd_KIE_beta = vector(length = n, mode = "numeric")
+)
+}
+```
+
+#Bootstrapping summary: Combine the average and sd values for the standard Rayleigh and Expanded Rayleigh tables to make a summary table
+```{r cNOR_boot_summary}
+#Make a table with the appropriate number of rows
+##n = number of models. In this case, n = 3 (standard Rayleigh, Expanded Rayleigh 1, and Expanded Rayleigh 2)
+n = 3
+
+cNOR_boot_summary <- blank_boot_summary(n=3)
+
+cNOR_boot_summary$Model = c(
+  "Standard Rayleigh",
+  "Expanded Rayleigh 1",
+  "Expanded Rayleigh 2"
+)
+
+cNOR_boot_summary$Data = c(
+  "average of 1000 bootstrapped samples"
+)
+
+cNOR_boot_summary$Replicate = c(
+  "all 3 replicates sampled with replacement"
+)
+
+cNOR_boot_summary$Subset = c(
+  "exclude data where f >= 0.9 or after N2O production plateaued"
+)
+
+#Add stats for standard Rayleigh model applied to bulk N values to both standard and Expanded Rayleigh models (used for both models)
+cNOR_boot_summary$Multiple_R_squared = c(
+  avg_cNOR_boot_1$Multiple_R_squared[1]
+)
+
+cNOR_boot_summary$sd_R_squared = c(
+  avg_cNOR_boot_1$Multiple_R_squared[5]
+)
+
+cNOR_boot_summary$lm_RMSE = c(
+  avg_cNOR_boot_1$RMSE_lm[1]
+)
+
+cNOR_boot_summary$sd_lm_RMSE = c(
+  avg_cNOR_boot_1$RMSE_lm[5]
+)
+
+cNOR_boot_summary$nls_RMSE = c(
+  avg_cNOR_boot_1$RMSE_nls[1:3]
+)
+
+cNOR_boot_summary$sd_nls_RMSE = c(
+  avg_cNOR_boot_1$RMSE_nls[5:7]
+)
+
+cNOR_boot_summary$f_min = c(
+  avg_cNOR_boot_1$f_min[1:3]
+)
+
+cNOR_boot_summary$sd_f_min = c(
+  avg_cNOR_boot_1$f_min[5:7]
+)
+
+cNOR_boot_summary$f_max = c(
+  avg_cNOR_boot_1$f_max[1:3]
+)
+
+cNOR_boot_summary$sd_f_max = c(
+  avg_cNOR_boot_1$f_max[5:7]
+)
+
+#Add calculated delta_s0 value to standard and Expanded Rayleigh models (calculated the same way for both types of model)
+cNOR_boot_summary$delta_s0 = c(
+  avg_cNOR_boot_1$delta_s0_calc[1]
+)
+
+cNOR_boot_summary$sd_delta_s0 = c(
+  avg_cNOR_boot_1$delta_s0_calc[5]
+)
+
+cNOR_boot_summary$rho = c(
+  avg_cNOR_boot_1$rho[1:3]
+)
+
+cNOR_boot_summary$sd_rho = c(
+  avg_cNOR_boot_1$rho[5:7]
+)
+
+cNOR_boot_summary$tau = c(
+  avg_cNOR_boot_1$tau[1:3]
+)
+
+cNOR_boot_summary$sd_tau = c(
+  avg_cNOR_boot_1$tau[5:7]
+)
+
+
+#Bulk N (delta_p) values are the same for all three models.
+cNOR_boot_summary$epsilon_p = c(
+  avg_cNOR_boot_1$epsilon_p[1]
+)
+
+cNOR_boot_summary$sd_epsilon_p = c(
+  avg_cNOR_boot_1$epsilon_p[5]
+)
+
+cNOR_boot_summary$epsilon_alpha = c(
+  avg_cNOR_boot_1$epsilon_alpha[1:3]
+)
+
+cNOR_boot_summary$sd_epsilon_alpha = c(
+  avg_cNOR_boot_1$epsilon_alpha[5:7]
+)
+
+cNOR_boot_summary$epsilon_beta = c(
+  avg_cNOR_boot_1$epsilon_beta[1:3]
+)
+
+cNOR_boot_summary$sd_epsilon_beta = c(
+  avg_cNOR_boot_1$epsilon_beta[5:7]
+)
+
+#Bulk N (delta_p) values are the same for all three models.
+cNOR_boot_summary$ff_p = c(
+  avg_cNOR_boot_1$ff_p[1]
+)
+
+cNOR_boot_summary$sd_ff_p = c(
+  avg_cNOR_boot_1$ff_p[5]
+)
+
+cNOR_boot_summary$ff_alpha = c(
+  avg_cNOR_boot_1$ff_alpha[1:3]
+)
+
+cNOR_boot_summary$sd_ff_alpha = c(
+  avg_cNOR_boot_1$ff_alpha[5:7]
+)
+
+cNOR_boot_summary$ff_beta = c(
+  avg_cNOR_boot_1$ff_beta[1:3]
+)
+
+cNOR_boot_summary$sd_ff_beta = c(
+  avg_cNOR_boot_1$ff_beta[5:7]
+)
+
+#Bulk N (delta_p) values are the same for all three models.
+cNOR_boot_summary$KIE_p = c(
+  avg_cNOR_boot_1$KIE_p[1]
+)
+
+cNOR_boot_summary$sd_KIE_p = c(
+  avg_cNOR_boot_1$KIE_p[5]
+)
+
+cNOR_boot_summary$KIE_alpha = c(
+  avg_cNOR_boot_1$KIE_alpha[1:3]
+)
+
+cNOR_boot_summary$sd_KIE_alpha = c(
+  avg_cNOR_boot_1$KIE_alpha[5:7]
+)
+
+cNOR_boot_summary$KIE_beta = c(
+  avg_cNOR_boot_1$KIE_beta[1:3]
+)
+
+cNOR_boot_summary$sd_KIE_beta = c(
+  avg_cNOR_boot_1$KIE_beta[5:7]
+)
+
+(cNOR_boot_summary)
+
+write.csv(cNOR_boot_summary, here("data/output/exp_cNOR/cNOR_boot_summary.csv"), row.names = TRUE)
+```
+
+#cNOR_boot_summary_2: Paste mean +/- standard deviation (standard and Expanded Rayleigh model)
+
+When the .csv file is opened in Excel, a funky symbol is included with the +/- symbol, but that can be removed with find and replace.
+```{r cNOR_boot_summary_2}
+
+(cNOR_boot_summary_2 <- cNOR_boot_summary %>% mutate(
+  Multiple_R_squared = c(
+    paste(round(as.numeric(cNOR_boot_summary$Multiple_R_squared[1:3]), 2), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_R_squared[1:3]), 2))
+  ),
+  
+  lm_RMSE = c(
+    paste(round(as.numeric(cNOR_boot_summary$lm_RMSE[1:3]), 2), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_lm_RMSE[1:3]), 2))
+  ),
+  
+  nls_RMSE = c("NA", #not defined for standard Rayleigh model
+    paste(round(as.numeric(cNOR_boot_summary$nls_RMSE[2:3]), 2), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_nls_RMSE[2:3]), 2))
+  ),
+  
+  f_min = c(
+    paste(round(as.numeric(cNOR_boot_summary$f_min[1:3]), 2), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_f_min[1:3]), 2))
+  ),
+  
+  f_max = c(
+    paste(round(as.numeric(cNOR_boot_summary$f_max[1:3]), 2), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_f_max[1:3]), 2))
+  ),
+
+  delta_s0 = c(
+    paste(round(as.numeric(cNOR_boot_summary$delta_s0[1:3]), 1), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_delta_s0[1:3]), 1))
+  ),  
+
+  rho = c("NA", #not defined for standard Rayleigh model
+    paste(round(as.numeric(cNOR_boot_summary$rho[2:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_rho[2:3]), 4))
+  ),
+  
+  tau = c("NA", #not defined for standard Rayleigh model
+    paste(round(as.numeric(cNOR_boot_summary$tau[2:3]), 5), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_tau[2:3]), 8))
+  ),   
+   
+  epsilon_p = c(
+    paste(round(as.numeric(cNOR_boot_summary$epsilon_p[1:3]), 1), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_epsilon_p[1:3]), 1))
+  ),  
+  
+  epsilon_alpha = c(
+    paste(round(as.numeric(cNOR_boot_summary$epsilon_alpha[1:3]), 1), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_epsilon_alpha[1:3]), 1))
+  ),  
+  
+  epsilon_beta = c(
+    paste(round(as.numeric(cNOR_boot_summary$epsilon_beta[1:3]), 1), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_epsilon_beta[1:3]), 1))
+  ),  
+
+  ff_p = c(
+    paste(round(as.numeric(cNOR_boot_summary$ff_p[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_ff_p[1:3]), 4))
+  ),
+  
+  ff_alpha = c(
+    paste(round(as.numeric(cNOR_boot_summary$ff_alpha[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_ff_alpha[1:3]), 4))
+  ),  
+  
+  ff_beta = c(
+    paste(round(as.numeric(cNOR_boot_summary$ff_beta[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_ff_beta[1:3]), 4))
+  ),
+  
+  KIE_p = c(
+    paste(round(as.numeric(cNOR_boot_summary$KIE_p[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_KIE_p[1:3]), 4))
+  ),
+  
+  KIE_alpha = c(
+    paste(round(as.numeric(cNOR_boot_summary$KIE_alpha[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_KIE_alpha[1:3]), 4))
+  ),  
+  
+  KIE_beta = c(
+    paste(round(as.numeric(cNOR_boot_summary$KIE_beta[1:3]), 4), "\u00B1", round(as.numeric(cNOR_boot_summary$sd_KIE_beta[1:3]), 4))
+  ),
+  
+)%>%
+    dplyr::select(-sd_R_squared, -sd_lm_RMSE, -sd_nls_RMSE, -sd_f_min, -sd_f_max, -sd_delta_s0, -sd_rho, -sd_tau, -sd_epsilon_p, -sd_epsilon_alpha, -sd_epsilon_beta, -sd_ff_p, -sd_ff_alpha, -sd_ff_beta, -sd_KIE_p, -sd_KIE_alpha, -sd_KIE_beta)
+)
+
+write.csv(cNOR_boot_summary_2, here("data/output/exp_cNOR/cNOR_boot_summary_2.csv"), row.names = TRUE)
+```
+
+#Table S3: cNOR_boot_summary_ER1: Make summary table for bootstrapped data w/ Expanded Rayleigh model 1 values.
+
+Put N_bulk, N_alpha, and N_beta values in separate rows.
+```{r cNOR_boot_summary_ER1}
+(cNOR_boot_summary_ER1 <- tibble(
+  Measurement = c(
+    "N_bulk", "N_alpha", "N_beta"
+  ),
+  
+  #Add Expanded Rayleigh model 1 values (from row 2 in cNOR_boot_summary_2) +/- standard deviation
+  epsilon = c(
+    cNOR_boot_summary_2$epsilon_p[2],
+    cNOR_boot_summary_2$epsilon_alpha[2],
+    cNOR_boot_summary_2$epsilon_beta[2]),
+  
+  KIE = c(
+    cNOR_boot_summary_2$KIE_p[2],
+    cNOR_boot_summary_2$KIE_alpha[2],
+    cNOR_boot_summary_2$KIE_beta[2]
+  ),
+  
+  #Add R_squared value (from standard Rayleigh model applied to N_bulk)
+  Multiple_R_squared = c(
+    rep(cNOR_boot_summary_2$Multiple_R_squared[2], 3)
+  ),
+  
+  #Add the RMSE value for the linear model (linear standard Rayleigh model where delta_p is the dependent variable)
+  RMSE_lm = c(
+    rep(cNOR_boot_summary_2$lm_RMSE[2], 3)
+  ),
+  
+  #Add the RMSE value for the nonlinear model (nonlinear part of Expanded Rayleigh model 1, where delta_p is the dependent variable)
+  RMSE_nls = c(
+    "NA", #nonlinear model not used to calculate N_bulk values
+    rep(cNOR_boot_summary_2$nls_RMSE[2], 2)
+  )
+  
+))
+
+write.csv(cNOR_boot_summary_ER1, here("data/output/exp_cNOR/cNOR_boot_summary_ER1.csv"), row.names = TRUE)
+```
