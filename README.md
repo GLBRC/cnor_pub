@@ -20,16 +20,16 @@ To clone the remote repository to your local drive and create a new directory on
     - For GLBRC users:
     ```
     git clone https://gitpub.wei.wisc.edu/rivettel/cnor_pub.git
-    cd new_sub_directory
+    cd cnor_pub
     ```
-Cloning the repository will create the three sub-directories under `cnor_pub`:
+Cloning the repository will create three sub-directories under `cnor_pub`:
 - `code` includes markdown (.qmd) files with code written in R
     - `exp_cNOR_pub` - code for analyzing the experimental isotopic (GC-IRMS) data presented in the main text
     - `controls_cNOR_pub` - code for analyzing the control GC-ECD and GC-IRMS data
-- `data` includes experimental data (.csv files) under `input` and `output` (initially empty)
+- `data` includes: experimental data (.csv files) under `input`, and `output` (initially empty)
 - `graphs` (initially empty)
 
-Running the code will create additional files that will be stored in `data` and `graphs`. To write files properly, the package `here` has to be loaded in the `cnor_pub` sub-directory.
+Running the code will create additional files that will be stored in these sub-directories. To write files properly, the package `here` has to be loaded in the `cnor_pub`.
 ## Integrate with your tools
 
 - [ ] [Set up project integrations](https://gitpub.wei.wisc.edu/rivettel/cnor_pub/-/settings/integrations)
