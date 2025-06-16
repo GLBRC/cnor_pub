@@ -1,25 +1,35 @@
 # cnor_pub
 
-
-
+## Description
+This repo includes the experimental data collected for the reduction of NO to N<sub>2</sub>O by purified *Paracoccus denitrificans* cytochrome *c* nitric oxide reductase (cNOR) and the R code used to analyze these data.
 ## Getting started
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+To clone the remote repository to your local drive and create a new directory on your local drive at the same time:
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- Go to the parent directory where you want to put this repository:
 
-## Add your files
+    ```
+    cd parent_directory
+    ```
+- Clone this remote repo into a new sub-directory and navigate to that sub-directory.
+    - For GitHub (non-GLBRC) users:
+    ```
+    git clone https://github.com/GLBRC/cnor_pub
+    cd cnor_pub
+    ```
+    - For GLBRC users:
+    ```
+    git clone https://gitpub.wei.wisc.edu/rivettel/cnor_pub.git
+    cd new_sub_directory
+    ```
+Cloning the repository will create the three sub-directories under `cnor_pub`:
+- `code` includes markdown (.qmd) files with code written in R
+    - `exp_cNOR_pub` - code for analyzing the experimental isotopic (GC-IRMS) data presented in the main text
+    - `controls_cNOR_pub` - code for analyzing the control GC-ECD and GC-IRMS data
+- `data` includes experimental data (.csv files) under `input` and `output` (initially empty)
+- `graphs` (initially empty)
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitpub.wei.wisc.edu/rivettel/cnor_pub.git
-git branch -M main
-git push -uf origin main
-```
-
+Running the code will create additional files that will be stored in `data` and `graphs`. To write files properly, the package `here` has to be loaded in the `cnor_pub` sub-directory.
 ## Integrate with your tools
 
 - [ ] [Set up project integrations](https://gitpub.wei.wisc.edu/rivettel/cnor_pub/-/settings/integrations)
