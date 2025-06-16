@@ -1,0 +1,1111 @@
+---
+title: "controls_cNOR"
+author: "Elise Rivett"
+date: "2025-06-16"
+output: html_document
+---
+#Goal: Analyze the data from control experiments.
+
+- GC-ECD data for N~2~O production in the absence or enzyme.
+
+- Isotopic (GC-IRMS) data collected for N~2~O synthesis catalyzed by *Paracoccus denitrificans* cytochrome *c* nitric oxide reductase (cNOR). Compare $\delta$ values for N~2~O produced in spiked vs non-spiked H~2~O. (H~2~^18^O)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load packages.
+```{r load_packages}
+library(ggplot2)
+library(tidyverse)
+library(nlstools)
+library(modelr) #provides rmse() function
+library(egg) #provides a way to save ggplots with specified sizes
+library(moments) #allows skewness and kurtosis calculations
+library(plotrix) #allows for standard error of the mean calculations
+library(car) #for ncvTest
+library(here) #Used to create file paths relative to top-level directory.
+library(outliers) #used for Grubbs' test for outliers
+library(MASS) #used for robust linear modeling (rlm)
+```
+#Naming conventions
+
+Throughout this file, bulk N is abbreviated as "p" (for "product").
+For example, `delta_p` refers to $\delta$^15^N^bulk^.
+
+$\delta$^18^O^N~2~O = delta_o
+
+"Fractionation factor" (normally abbreviated as $\alpha$) is abbreviated as `ff` to avoid confusion with N^$\alpha$^.
+
+$\alpha$~N-bulk~ = `ff_p`
+
+$\alpha$~N-$\alpha$~ = `ff_alpha`
+
+$\alpha$~N-$\beta$~ = `ff_beta`
+
+Other Greek letters are spelled out in object names. For example:
+
+Enrichment factor ($\epsilon$) = `epsilon`
+
+Other abbreviations
+
+- lm    linear regression model
+
+- nls   nonlinear least square regression model
+
+- sd    standard deviation
+
+- se    standard error
+
+- SP    site preference
+
+#Import GC-ECD data for no-enzyme negative controls.
+
+- 1 mL of NO (40.9 umol) was added to each reaction, so it is theoretically possible to produce 20.45 umol of N2O.
+```{r import_no_enzyme_GC-ECD}
+no_enzyme <- read.table(here("data/input/no_enzyme_GC-ECD.csv"),sep = ",", header = TRUE)
+```
+
+#Make color-blind palettes for ggplot.
+
+##Note: Included this code chunk twice so that the code for no-enzyme data and spiked controls can be run separately or split into different markdown files.
+```{r cbPalette}
+#http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/#a-colorblind-friendly-palette
+
+# The palette with grey:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# The palette with black:
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# To use for fills, add
+  #scale_fill_manual(values=cbPalette)
+
+# To use for line and point colors, add
+  #scale_colour_manual(values=cbPalette)
+```
+
+#Figure S7: Plot N2O produced vs time for no-enzyme controls (GC-ECD data)
+```{r plot_Fig_S7}
+
+no_enzyme <- no_enzyme %>%
+  mutate(
+  Rep_name = c(
+    rep("Replicate 1", each = 2),
+    rep("Replicate 2", each = 2)
+  )
+)
+
+(no_enzyme_fig <- ggplot()+
+  geom_point(data = no_enzyme,
+    mapping = 
+         aes(x = Time_min, y = N2O_umol, shape = Rep_name, color = Rep_name))+
+    
+  scale_color_manual(name = "Replicate",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("Replicate 1"))),
+    expression(paste(bold("Replicate 2")))
+  ))+
+ 
+  scale_shape_manual(name = "Replicate",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("Replicate 1"))),
+    expression(paste(bold("Replicate 2")))
+  ))+ 
+
+  xlab(expression(paste(bold("Time (min)"))))+
+  ylab(expression(paste( bold(N[2]),bold("O" ), bold (" ("), bold( mu), bold("mol) "), sep="")))+
+  #xlim(0, 180)+
+   
+  scale_x_continuous(limits = c(0, 180), breaks = c(30*0:7))+ 
+  ylim(0, 2)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+    
+  theme(legend.title = element_blank())+
+   
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+ 
+)
+
+ggsave(no_enzyme_fig, filename = here("graphs/exp_controls/no_enzyme_fig.tiff"), height = 3, width = 5, units = "in")
+
+```
+
+#Import all experimental data (including outliers) from experiments with and without spiked (18O-enriched) water.
+
+- controls_all also includes these columns for calculating uncertainty in f:
+ - sample_N2O_nmol: nmol of N2O in the 30 mL sample bottle (calculated from m44 peak height using a standard curve)
+ 
+  - sd_sample_nmol: Standard deviation of the N2O nmol in the 30 mL sample bottle. See https://chem.libretexts.org/Courses/Duke_University/CHEM_401L%3A_Analytical_Chemistry_Lab/CHEM_401L%3A_Analytical_Chemistry_Lab_Manual/02%3A_Calibration_and_Quantitative_Techniques/2.05%3A_Uncertainty_in_values_determined_from_a_Calibration_Curve
+ 
+ and references therein:
+ (a)	Miller, J. N. Analyst 1991, 116, 3–14; (b) Sharaf, M. A.; Illman, D. L.; Kowalski, B. R. Chemometrics, Wiley-Interscience: New York, 1986, pp. 126-127; (c) Analytical Methods Committee “Uncertainties in concentrations estimated from calibration experiments,” AMC Technical Brief, March 2006
+ 
+ - sample_V: volume of headspace sampled from the reaction bottle. (Sample was removed from 160 mL reaction bottle and transferred to the 30 mL sample bottle.)
+ 
+ - N2O_nmol_rxn_bottle: nmol in the rxn bottle (160 mL bottle) at that timepoint; used for calculating sd_f
+ 
+- sd_N2O_nmol: sd of N2O in rxn bottle at that timepoint; equivalent to sd of total N2O produced
+
+- total N2O produced = (N2O in rxn bottle) + (N2O during previous timepoints)
+  However, sd of N2O removed during previous timepoints is negligible (<= 0.1 nmol) and thus was not included in the calculation
+  
+  - sd_f: standard deviation of f, calculated using sd of N_s0 and sd_N2O_nmol
+
+```{r import_controls_all}
+controls_all_raw <- read.table(here("data/input/controls_all.csv"),sep = ",", header = TRUE)
+```
+
+#controls_all: Calculate additional values: (1-f), [-flnf/(1-f)], etc
+```{r controls_all}
+controls_all <- controls_all_raw %>%
+
+  #Add back-calculated values
+mutate(
+ N_p = N2O_nmol*2,
+ N_s = N_s0 - N_p,
+ one_minus_f = 1-f,
+ `-flnf/(1-f)` = -f*log(f)/(1-f),
+ 
+#Add more values for N (for Expanded Rayleigh model)
+ R_std = 0.0036765, #R for atmospheric N2
+ R_p = (delta_p/1000 + 1)*R_std,
+ R_alpha = (delta_alpha/1000 + 1)*R_std,
+ R_beta = (delta_beta/1000 + 1)*R_std,
+ `14N_p` = N_p/(1 + R_p),
+ `15N_p` = R_p*`14N_p`,
+ `14N_alpha` = 0.5*N_p/(1 + R_alpha),
+ `15N_alpha` = R_alpha*`14N_alpha`,
+ tau = `14N_alpha`/`14N_p`,
+
+#Convert N2O nmol to umol
+  N2O_umol = N2O_nmol/1000,
+  sd_N2O_umol = sd_N2O_nmol/1000
+)
+
+write.csv(controls_all, here("data/output/exp_controls/controls_all.csv"), row.names = FALSE)
+```
+
+#Make color-blind palettes for ggplot.
+```{r cbPalette_repeat}
+#http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/#a-colorblind-friendly-palette
+
+# The palette with grey:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# The palette with black:
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# To use for fills, add
+  #scale_fill_manual(values=cbPalette)
+
+# To use for line and point colors, add
+  #scale_colour_manual(values=cbPalette)
+```
+
+#Make table with only the observations included in the final analysis.
+
+For each replicate, 1-2 observations at the end of the reaction were excluded because N2O production had ceased by that point (i.e., f stopped decreasing). Observations where f >= 0.9 (at the start of the reaction) were also removed.
+  
+Observations that were excluded:
+  
+  - Non-spiked Replicate 1: Observation 1 (30 min)
+  
+  - Non-spiked Replicate 2: Observations 1 and 5-6 (30 min, 150 min, and 180 min).
+  
+  - Spiked Replicate 1: Observations 1 and 6 (30 min and 180 min)
+  
+  - Spiked Replicate 2: Observations 1 and 6 (30 min and 180 min)
+
+#controls_w_outlier - Make table with the following observations removed: f >= 0.9 or after N2O production stopped/plateaued
+```{r write_controls_w_outlier}
+controls_w_outlier <- controls_all %>% filter(
+  ##Non-spiked replicate 1 - remove first observation (30 min, f ~= 0.9)
+  Name != "cNOR-1 30min" &
+  
+  ##Non-spiked replicate 2 - remove first observation (30 min, f ~= 0.9) and remove last two observations (150 min, 180 min, N2O production stopped)
+  Name != "cNOR-2 30min 7-7-17" & Name != "cNOR-2 150min 7-7-17" &
+  Name != "cNOR-2 180min 7-7-17" &
+    
+  ##Spiked replicate 1 - remove first observation (30 min, f ~= 0.9) and remove last observation (180 min, N2O production stopped)
+  Name != "cNOR-spike-1 30min 6-30-17" & Name != "cNOR-spike-1 180min 7-7-17" &
+    
+  ##Spiked replicate 2 -  remove first observation (30 min, f ~= 0.9) and remove last observation (180 min, N2O production stopped)
+  Name != "cNOR-spike-2 30min 7-7-17" & Name != "cNOR-spike-2 180min 7-7-17"
+)
+
+#Write table to output folder
+write.csv(controls_w_outlier, here("data/output/exp_controls/controls_w_outlier.csv"), row.names = TRUE)
+
+(controls_w_outlier)
+```
+
+#controls_w_outlier_lm_pool: Name linear regression models for standard Rayleigh plots were y = delta_p (pool spiked replicates; pool non-spiked replicates)
+```{r controls_w_outlier_pool_lm_delta_p}
+#Non-spiked replicates 1-2
+controls_w_outlier_NS_lm_delta_p <- lm(
+  delta_p ~ `-flnf/(1-f)`, data = filter(controls_w_outlier, Replicate == "NS-1"|Replicate == "NS-2")
+)
+
+#Spiked replicates 1-2
+controls_w_outlier_S_lm_delta_p <- lm(
+  delta_p ~ `-flnf/(1-f)`, data = filter(controls_w_outlier, Replicate == "S-1"|Replicate == "S-2")
+)
+
+#Check summary for each linear regression model
+summary(controls_w_outlier_NS_lm_delta_p)
+summary(controls_w_outlier_S_lm_delta_p)
+```
+#controls_w_outlier: Plot residual for standard Rayleigh model where y = delta_p (spiked data pooled and non-spiked data pooled)
+
+It might be easier to see the residuals when plotted this way.
+```{r controls_w_outlier_lm_delta_p_res}
+#Non-spiked replicates 1-2
+#Define the residuals for each lm model.
+controls_w_outlier_NS_lm_delta_p_res <- resid(controls_w_outlier_NS_lm_delta_p)
+
+#Plot residuals vs fitted values for delta_p
+
+##Pooled replicates
+plot(x = fitted(controls_w_outlier_NS_lm_delta_p), y = controls_w_outlier_NS_lm_delta_p_res, xlab = "Fitted values", ylab = "Residuals delta_p")
+
+#add a horizontal line at 0 (a = slope, b = intercept)
+abline(0,0)
+
+#Spiked replicates 1-2
+#Define the residuals for each lm model.
+controls_w_outlier_S_lm_delta_p_res <- resid(controls_w_outlier_S_lm_delta_p)
+
+#Plot residuals vs fitted values for delta_p
+
+##Pooled replicates
+plot(x = fitted(controls_w_outlier_S_lm_delta_p), y = controls_w_outlier_S_lm_delta_p_res, xlab = "Fitted values", ylab = "Residuals delta_p")
+
+#add a horizontal line at 0 (a = slope, b = intercept)
+abline(0,0)
+```
+##Non-spiked replicates 1-2: Residual with the largest absolute value ~= -0.7
+##Spiked replicates 1-2: Residual with the largest absolute value ~= 3.4
+
+#controls_w_outlier (controls without Grubbs' outliers removed): Plot delta_N_bulk vs -flnf/(1-f) (spiked data pooled and non-spiked data pooled)
+
+controls_w_outlier: Observations where f >= 0.9 or after N2O production stopped have been removed
+```{r plot_controls_w_outlier}
+#Plot pooled non-spiked data (8 observations)
+(controls_w_outlier_NS_delta_p_pool <- ggplot(data = filter(controls_w_outlier, Replicate == "NS-1"|Replicate == "NS-2"))+
+  geom_point(mapping = 
+         aes(x = `-flnf/(1-f)`, y = delta_p), shape = 16, color = "black", size = 2)+
+     geom_smooth(mapping = aes(x = `-flnf/(1-f)`, y = delta_p), color = "black",
+              method = lm, se = FALSE)+
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+
+  ylim(-55, -45)+
+    
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  #format axis titles
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+  
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black")) 
+)
+  
+#save figure
+ggsave(controls_w_outlier_NS_delta_p_pool, filename = here("graphs/exp_controls/controls_w_outlier_NS_delta_p_pool.tiff"), height = 3, width = 5, units = "in")
+
+#Plot pooled spiked data (8 observations)
+(controls_w_outlier_S_delta_p_pool <- ggplot(data = filter(controls_w_outlier, Replicate == "S-1"|Replicate == "S-2"))+
+  geom_point(mapping = 
+         aes(x = `-flnf/(1-f)`, y = delta_p), shape = 17, color = "#CC79A7", size = 2)+
+     geom_smooth(mapping = aes(x = `-flnf/(1-f)`, y = delta_p), color = "#CC79A7",
+              method = lm, se = FALSE)+
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+
+  ylim(-55, -45)+
+    
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  #format axis titles
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+  
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black")) 
+)
+  
+#save figure
+ggsave(controls_w_outlier_S_delta_p_pool, filename = here("graphs/exp_controls/controls_w_outlier_S_delta_p_pool.tiff"), height = 3, width = 5, units = "in")
+```
+##From the Rayleigh plot for non-spiked replicates 1-2, you can see that observation NS-1, 90 min is slightly off the linear regression line. The Rayleigh plot for spiked replicates 1-2 shows that observation S-1, 90 min is very far off the linear regression line.
+
+#Grubbs test for MS using controls_w_outlier table
+
+Apply Grubbs' test after data observations have been removed (f >= 0.9 or N2O production plateaued) and the remaining data has been pooled.
+
+- Pool spiked replicates 1-2
+- Pool non-spiked replicates 1-2
+
+Test the residuals for standard Rayleigh linear regression where x = -[-flnf/(1-f)] and y = delta_p (replicates analyzed individually).
+
+type = 10
+
+Tests if the one value that is the farthest from the mean (absolute value of the difference from the mean) is an outlier by calculating Grubbs' statistic G.
+
+G = max|Y - mean Y|/s
+
+where Y is an individual value, mean Y (or Y bar) is the average of all values, and s is the sample standard deviation.
+
+https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h1.htm
+
+p-value < 0.05: Reject the null hypothesis and conclude that the value(s) in question is/are outliers.
+
+p-value > 0.05: Fail to reject the null hypothesis; insufficient evidence to say that the value(s) in question is/are outlier(s).
+
+Null hypothesis: There is no outlier
+
+For more details, see:
+
+https://www.statology.org/grubbs-test-r/
+```{r controls_grubbs_pooled_one_outlier}
+#Non-spiked Replicates 1-2
+##type = 10: Test if the max value is an outlier
+grubbs.test(controls_w_outlier_NS_lm_delta_p$residuals)
+
+#Spiked Replicates 1-2
+##type = 10: Test if the max value is an outlier
+grubbs.test(controls_w_outlier_S_lm_delta_p$residuals)
+```
+##Non-spiked data: Replicate 1, 90 min observation (NS-1, 90 min) has been identified as an outlier (lowest residual value): p-value for Grubbs' test is < 0.05.
+
+This is the second observation in controls_w_outlier data for non-spiked replicates.
+
+##Spiked data: Replicate 1, 90 min observation (S-1, 90 min) has been identified as an outlier (highest residual value): p-value for Grubbs' test is << 0.05.
+
+This is the second observation in controls_w_outlier data for spiked replicates.
+
+#controls - Make table with the following observations removed: f >= 0.9 or after N2O production stopped/plateaued AND outliers identified by Grubbs' test
+
+Remove
+- Non-spiked replicate 1, 90 min observation
+- Spiked replicate 1, 90 min observation
+
+Use this data for all subsequent analyses.
+```{r write_controls}
+controls <- controls_w_outlier %>% filter(
+  ##Non-spiked replicate 1 - remove 90 min observation (Grubbs' test outlier)
+  Name != "cNOR-1 90min 6-30-17" &
+    
+  ##Spiked replicate 1 - remove 90 min observation (Grubbs' test outlier)
+  Name != "cNOR-spike-1 90min 6-30-17"
+
+)
+
+#Write table to input folder
+write.csv(controls, here("data/input/controls.csv"), row.names = FALSE)
+
+#Write table to output folder
+write.csv(controls, here("data/output/exp_controls/controls.csv"), row.names = TRUE)
+
+(controls)
+```
+
+#Table S2 (controls): Write table with delta values and f values for SI.
+
+##Note - Re-organize table in Excel
+```{r SI_delta_table, eval=FALSE}
+
+(controls_delta_SI <- controls %>%
+  mutate(
+    Replicate_name = c(
+      rep("Non-spiked 1", each = 4),
+      rep("Spiked 1", each = 3),
+      rep("Non-spiked 2", each = 3),
+      rep("Spiked 2", each = 4)
+    ),
+    
+    Replicate_number = c(
+      rep(1, each = 4),
+      rep(1, each = 3),
+      rep(2, each = 3),
+      rep(2, each = 4)
+    ),
+    
+    N2O_umol = c(
+    paste(round(as.numeric(controls$N2O_umol), 2), "\u00B1", round(as.numeric(controls$sd_N2O_umol), 2))
+    ),
+    
+    f = c(
+    paste(round(as.numeric(controls$f), 2), "\u00B1", round(as.numeric(controls$sd_f), 2))
+    ),
+    
+    delta_o =
+      paste(round(as.numeric(controls$delta_o), 2)),
+    
+    delta_p =
+      paste(round(as.numeric(controls$delta_p), 2)),
+    
+    delta_alpha =
+      paste(round(as.numeric(controls$delta_alpha), 2)),
+    
+    delta_beta =
+      paste(round(as.numeric(controls$delta_beta), 2)),
+    
+    SP =
+      paste(round(as.numeric(controls$SP), 2))    
+  ) %>%
+   
+   dplyr::select(
+     Date, Replicate, Replicate_name, Replicate_number, Time_min, N2O_umol, f, delta_o, delta_p, delta_alpha, delta_beta, SP
+   )
+
+)
+
+#Write table to output folder
+write.csv(controls_delta_SI, here("data/output/exp_controls/controls_delta_SI.csv"), row.names = TRUE)
+```
+
+#Make blank table (tibble) for storing values extracted from each model.
+```{r summary_blank}
+#n = number of loops; in this case, the number of replicates
+n = 1
+
+#m = number of models; in this case, m = 1 because we're only using one model for each table
+
+m <- 1
+
+blank_tb <- function(n, m = 1) {
+  tibble(
+    Model = vector(length = n*m, mode = "expression"),
+    Data = vector(length = n*m, mode = "expression"),
+    Replicate = vector(length = n*m, mode = "expression"),
+  
+    Multiple_R_squared = vector(length = n*m, mode = "numeric"),
+    RMSE_lm = vector(length = n*m, mode = "numeric"), #RMSE value for delta_p prediction from linear Rayleigh model
+  
+    lm_delta_p_ncv = vector(length = n*m, mode = "numeric"), #p-value from ncvTest
+  
+    f_min = vector(length = n*m, mode = "numeric"),
+    f_max = vector(length = n*m, mode = "numeric"),
+  
+    delta_s0_meas = vector(length = n*m, mode = "numeric"),
+    se_delta_s0_meas = vector(length = n*m, mode = "numeric"),
+    
+    delta_s0_calc = vector(length = n*m, mode = "numeric"),
+    se_delta_s0_calc = vector(length = n*m, mode = "numeric"),
+    
+    RMSE_nls = vector(length = n*m, mode = "numeric"), #RMSE value for delta_p prediction from nonlinear model
+    
+    rho = vector(length = n*m, mode = "numeric"),
+    se_rho = vector(length = n*m, mode = "numeric"),
+  
+    tau = vector(length = n*m, mode = "numeric"),
+    se_tau = vector(length = n*m, mode = "numeric"),
+    
+    epsilon_p = vector(length = n*m, mode = "numeric"),
+    se_epsilon_p = vector(length = n*m, mode = "numeric"),
+    
+    ff_p = vector(length = n*m, mode = "numeric"),
+    se_ff_p = vector(length = n*m, mode = "numeric"),
+    
+    ff_alpha = vector(length = n*m, mode = "numeric"),
+    se_ff_alpha = vector(length = n*m, mode = "numeric"),
+    
+    ff_beta = vector(length = n*m, mode = "numeric"),
+    se_ff_beta = vector(length = n*m, mode = "numeric"),   
+ 
+    epsilon_alpha = vector(length = n*m, mode = "numeric"),
+    se_epsilon_alpha = vector(length = n*m, mode = "numeric"),
+    
+    epsilon_beta = vector(length = n*m, mode = "numeric"),
+    se_epsilon_beta = vector(length = n*m, mode = "numeric"),
+    
+    KIE_p = vector(length = n*m, mode = "numeric"),
+    se_KIE_p = vector(length = n*m, mode = "numeric"),
+    
+    KIE_alpha = vector(length = n*m, mode = "numeric"),
+    se_KIE_alpha = vector(length = n*m, mode = "numeric"),
+    
+    KIE_beta = vector(length = n*m, mode = "numeric"),
+    se_KIE_beta = vector(length = n*m, mode = "numeric")
+)
+}
+```
+
+#Apply the standard Rayleigh model to pooled replicates (pooled non-spiked reps and pooled spiked reps)
+
+  - NS_pool: non-spiked replicates 1 and 2 (NS-1 and NS-2)
+  - S_pool: spiked replicates 1 and 2 (S-1 and S-2)
+```{r controls_pool_Rayleigh, warning=FALSE}
+#n = number of loops; in this case, n = 2 because we have two groups of data (non-spiked reps 1-2 and spiked reps 1-2)
+n <- 2
+
+#m = number of models; in this case, m = 1 because we're only using one model (standard Rayleigh)
+
+m <- 1
+
+#Make empty table to store results
+controls_pool_std_ray <- blank_tb(n, m)
+
+controls_pool_std_ray <- mutate(controls_pool_std_ray,
+  Model = c(
+    "Standard Rayleigh (lm)"
+  ),
+  
+  Data = c("Observations excluded: f >= 0.9, or if after rxn plateaued,  or outlier from Grubb's test"),
+  
+  Replicate = c(
+    "Non-spiked Replicates 1-2",
+    "Spiked Replicates 1-2"
+)
+) 
+
+for (i in 1:n) {
+  
+  #Code for analyzing pooled replicates
+ if(i == 1){
+   #non-spiked reps. 1-2
+    data <- filter(controls, f < 1 & Replicate == "NS-1"| Replicate == "NS-2") 
+  } else if(i == 2){
+    #spiked reps. 1-2
+    data <- filter(controls, f < 1 & Replicate == "S-1" | Replicate == "S-2") 
+  }
+
+  #Apply standard Rayleigh model where x = `-flnf/(1-f)` and y = delta_p, delta_alpha, or delta_beta
+    lm_delta_p <- lm(delta_p ~ `-flnf/(1-f)`, data = data)
+    
+    lm_delta_alpha <- lm(delta_alpha ~ `-flnf/(1-f)`, data = data)
+    
+    lm_delta_beta <- lm(delta_beta ~ `-flnf/(1-f)`, data = data)
+  
+    #Fill in table w/ values extracted from standard Rayleigh model where y = delta_p
+    controls_pool_std_ray$Multiple_R_squared[i] = summary(lm_delta_p)$r.squared
+    controls_pool_std_ray$RMSE_lm[i] = rmse(model = lm_delta_p, data = data)
+  
+    controls_pool_std_ray$lm_delta_p_ncv[i] = car::ncvTest(lm_delta_p)$p #p-value from ncvTest
+  
+    controls_pool_std_ray$f_min[i] = min(data$f)
+    controls_pool_std_ray$f_max[i] = max(data$f)
+    
+    controls_pool_std_ray$delta_s0_meas[i] = "NA"
+    controls_pool_std_ray$se_delta_s0_meas[i] = "NA"
+  
+    controls_pool_std_ray$delta_s0_calc[i] = summary(lm_delta_p)$coefficients[1,1]
+    controls_pool_std_ray$se_delta_s0_calc[i] = summary(lm_delta_p)$coefficients[1,2]    
+    
+    controls_pool_std_ray$RMSE_nls[i] = "NA"
+    
+    controls_pool_std_ray$rho[i] = "NA"
+    controls_pool_std_ray$se_rho[i] = "NA"
+  
+    controls_pool_std_ray$tau[i] = "NA"
+    controls_pool_std_ray$se_tau[i] = "NA"
+    
+    controls_pool_std_ray$epsilon_p[i] = as.numeric(lm_delta_p$coefficients[2])
+    controls_pool_std_ray$se_epsilon_p[i] = summary(lm_delta_p)$coefficients[2,2]
+    
+    controls_pool_std_ray$ff_p[i] = 1 + lm_delta_p$coefficients[2]/1000
+    controls_pool_std_ray$se_ff_p[i] = controls_pool_std_ray$se_epsilon_p[i]/1000
+    
+    controls_pool_std_ray$epsilon_alpha[i] = as.numeric(lm_delta_alpha$coefficients[2])
+    controls_pool_std_ray$se_epsilon_alpha[i] = summary(lm_delta_alpha)$coefficients[2,2]
+    
+    controls_pool_std_ray$epsilon_beta[i] = as.numeric(lm_delta_beta$coefficients[2])
+    controls_pool_std_ray$se_epsilon_beta[i] = summary(lm_delta_beta)$coefficients[2,2]
+    
+    controls_pool_std_ray$ff_alpha[i] = 1 + lm_delta_alpha$coefficients[2]/1000
+    controls_pool_std_ray$se_ff_alpha[i] = controls_pool_std_ray$se_epsilon_alpha[i]/1000
+    
+    controls_pool_std_ray$ff_beta[i] = 1 + lm_delta_beta$coefficients[2]/1000
+    controls_pool_std_ray$se_ff_beta[i] = controls_pool_std_ray$se_epsilon_beta[i]/1000  
+    
+    controls_pool_std_ray$KIE_p[i] = 1/controls_pool_std_ray$ff_p[i]
+    controls_pool_std_ray$se_KIE_p[i] = abs(-1/(controls_pool_std_ray$ff_p[i])^2*controls_pool_std_ray$se_ff_p[i])
+    
+    controls_pool_std_ray$KIE_alpha[i] = 1/controls_pool_std_ray$ff_alpha[i]
+    controls_pool_std_ray$se_KIE_alpha[i] = abs(-1/(controls_pool_std_ray$ff_alpha[i])^2*controls_pool_std_ray$se_ff_alpha[i])
+    
+    controls_pool_std_ray$KIE_beta[i] = 1/controls_pool_std_ray$ff_beta[i]
+    controls_pool_std_ray$se_KIE_beta[i] = abs(-1/(controls_pool_std_ray$ff_beta[i])^2*controls_pool_std_ray$se_ff_beta[i])
+}
+
+write.csv(controls_pool_std_ray, here("data/output/exp_controls/controls_pool_std_ray.csv"), row.names = TRUE)
+
+(controls_pool_std_ray)
+```
+
+#Figure S1: controls: Plot standard N~2~O production where x = Time_min (spiked data pooled and non-spiked data pooled)
+```{r plot_Fig_S1}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_Fig_S1 <- ggplot()+
+  geom_point(data = controls_grouped,
+    mapping = 
+         aes(x = Time_min, y = N2O_nmol/1000, shape = exp_type, color = exp_type))+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+ 
+
+  xlab(expression(paste(bold("Time (min)"))))+
+  ylab(expression(paste( bold(N[2]),bold("O" ), bold (" ("), bold( mu), bold("mol) "), sep="")))+
+  #xlim(0, 180)+
+   
+  scale_x_continuous(limits = c(0, 180), breaks = c(30*0:7))+ 
+  ylim(0, 2)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+    
+  theme(legend.title = element_blank())+
+   
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+ 
+)
+
+ggsave(controls_Fig_S1, filename = here("graphs/exp_controls/controls_Fig_S1.tiff"), height = 3, width = 5, units = "in")
+
+```
+
+#Figure S2A: delta_o vs (1-f) (spiked data pooled and non-spiked data pooled)
+```{r plot_controls_Fig_S2A}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_delta_o_pool <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = one_minus_f, y = delta_o, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+ 
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+
+  ylim(9,18)+
+    
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  #format axis titles
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^18),bold(O),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+
+  #theme(legend.justification = c("right", "bottom"))+
+  
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black")) 
+)
+  
+#save figure
+ggsave(controls_delta_o_pool, filename = here("graphs/exp_controls/controls_delta_o_pool.tiff"), height = 3, width = 5, units = "in")
+```
+#Figure S2B: delta_N_bulk vs (1-f) (spiked data pooled and non-spiked data pooled)
+```{r plot_controls_Fig_S2B}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_delta_p_pool <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = one_minus_f, y = delta_p, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+ 
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+
+
+  ylim(-55, -40)+
+    
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+   
+  #format axis titles
+  theme(axis.title = element_text(size = 16))+
+  theme(axis.text = element_text(size = 16))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+  
+    #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black")) 
+)
+  
+#save figure
+ggsave(controls_delta_p_pool, filename = here("graphs/exp_controls/controls_delta_p_pool.tiff"), height = 3, width = 5, units = "in")
+```
+#Figure S3A: Graph delta_alpha vs (1-f) (spiked data pooled and non-spiked data pooled)
+```{r plot_Fig_S3A, warning=FALSE}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_delta_alpha_pool <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = one_minus_f, y = delta_alpha, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^alpha),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(controls_delta_alpha_pool, filename = here("graphs/exp_controls/controls_delta_alpha_pool.tiff"), height = 3, width = 5, units = "in")
+```
+#Figure S3B: Graph delta_beta vs (1-f) (spiked data pooled and non-spiked data pooled)
+```{r plot_Fig_S3B, warning=FALSE}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_delta_beta_pool <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = one_minus_f, y = delta_beta, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  #ylim(-55, -40)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^beta),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(controls_delta_beta_pool, filename = here("graphs/exp_controls/controls_delta_beta_pool.tiff"), height = 3, width = 5, units = "in")
+```
+#Figure S4: Graph SP vs (1-f) (spiked data pooled and non-spiked data pooled)
+```{r plot_Fig_S4, warning=FALSE}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_SP_pool <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = one_minus_f, y = SP, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  ylim(0, 16)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("Fraction Reduced (1-"), italic("f"), bold(")"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^SP),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.8,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(controls_SP_pool, filename = here("graphs/exp_controls/controls_SP_pool.tiff"), height = 3, width = 5, units = "in")
+```
+
+#Graph SP vs '-flnf/(1-f)' (spiked data pooled and non-spiked data pooled)
+```{r plot_controls_SP_Rayleigh, warning=FALSE}
+#Group spiked and non-spiked replicates
+controls_grouped <- controls %>%
+  mutate(
+    exp_type = c(
+      rep("Non-spiked", each = 7),
+      rep("Spiked", each = 7)
+    )
+  )
+
+(controls_SP_pool_Rayleigh <- ggplot()+
+  geom_point(data = controls_grouped, mapping = 
+         aes(x = `-flnf/(1-f)`, y = SP, shape = exp_type, color = exp_type), size = 2)+
+    
+  scale_color_manual(name = "Experiment Type",
+    values = c("black", "#CC79A7"),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+
+ 
+  scale_shape_manual(name = "Experiment Type",
+    values = c(16, 17),
+    labels = c(
+    expression(paste(bold("No "), bold(H[2]^18),bold("O Added"))),
+    expression(paste(bold(H[2]^18),bold("O Enriched")))
+  ))+    
+    
+  scale_x_continuous(limits = c(0, 1), breaks = c(0.25*0:5),
+                     labels = paste0(c(0.25*0:5),""))+ 
+  ylim(0, 16)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.minor = element_blank())+
+  
+    #format axis titles
+  theme(axis.title = element_text(size = 12))+
+  theme(axis.text = element_text(size = 12))+
+  xlab(expression(paste(bold("[-fln(f)/(1-f)]"))))+
+  ylab(expression(paste(bold(delta^15),bold(N^SP),bold(" (\u2030)"),sep="")))+
+  
+  #format legend
+  theme(legend.title = element_blank())+
+  theme(legend.position = c(0.2,0.2))+   
+  #theme(legend.justification = c("right", "bottom"))+
+    
+  #format axis lines, text, tick marks
+  theme(axis.line = element_line(size=1, colour = "black"))+
+  theme(axis.ticks = element_line(color="black", size=1))+
+  #theme(axis.ticks.length = unit(0.2, "cm"))+
+  theme(axis.title.y=element_text(margin=margin(0,20,0,0),size=12,face="bold",angle=90,hjust=0.5,vjust=1.1))+
+  theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
+  theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
+  theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+)
+
+#save figure
+ggsave(controls_SP_pool_Rayleigh, filename = here("graphs/exp_controls/controls_SP_pool_Rayleigh.tiff"), height = 3, width = 5, units = "in")
+```
+#Apply linear regression model to SP (spiked data pooled and non-spiked data pooled)
+```{r lm_SP_pool}
+#Non-spiked replicates 1-2
+controls_SP_NS_lm_pool <- lm(SP ~ `-flnf/(1-f)`, data = filter(controls, f < 1 & Replicate == "NS-1"| Replicate == "NS-2"))
+summary(controls_SP_NS_lm_pool)
+
+#Spiked replicates 1-2
+controls_SP_S_lm_pool <- lm(SP ~ `-flnf/(1-f)`, data = filter(controls, f < 1 & Replicate == "S-1"| Replicate == "S-2"))
+summary(controls_SP_S_lm_pool)
+```
