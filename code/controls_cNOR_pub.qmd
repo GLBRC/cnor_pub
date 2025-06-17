@@ -457,7 +457,7 @@ write.csv(controls, here("data/output/exp_controls/controls.csv"), row.names = T
 #Table S2 (controls): Write table with delta values and f values for SI.
 
 ##Note - Re-organize table in Excel
-```{r SI_delta_table, eval=FALSE}
+```{r SI_delta_table}
 
 (controls_delta_SI <- controls %>%
   mutate(
