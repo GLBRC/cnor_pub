@@ -39,6 +39,7 @@ Running the code will create additional files that will be stored in these sub-d
 - cNOR_raw.csv
     - The isotopic data presented in the main text and used to determine KIEs (Figures 1-3, Table 1, Figures S5-6, Table S1)
     - Excludes data collected after N<sub>2</sub>O production plateaued
+    - Note that this file can also be generated using cNOR_all_raw.csv as input and running the `controls_cNOR_pub` code.
 
 ### controls_cNOR_pub
 - no_enzyme_GC-ECD.csv
@@ -53,6 +54,7 @@ Running the code will create additional files that will be stored in these sub-d
     - Excludes data where *f* is greater than or equal to 0.9
     - Excludes data collected after N<sub>2</sub>O production plateaued
     - Excludes outliers identified with Grubbs' test
+    - Note that this file can also be generated using controls_all.csv as input and running the `exp_cNOR_pub` code.
 ## General outline for analyzing experimental data
 - Load packages
 - Load data
