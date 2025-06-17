@@ -202,7 +202,7 @@ write.csv(cNOR, here("data/output/exp_cNOR/cNOR.csv"), row.names = FALSE)
 ```
 
 #Table S1 (cNOR): Write table with delta values and f values for SI.
-```{r SI_delta_table, eval=FALSE}
+```{r SI_delta_table}
 
 (cNOR_delta_SI <- cNOR %>%
   mutate(
