@@ -64,7 +64,7 @@ Running the code will create additional files that will be stored in these sub-d
     - After N<sub>2</sub>O production plateaued
 - Combine (pool) data from all replicates
 - Apply standard Rayleigh model to bulk N
-    - Perform Grubb's test for outliers
+    - Perform Grubbs' test for outliers
     - Remove outlier and reapply standard Rayleigh model if necessary
 - Plot data
 - Apply Expanded Rayleigh model to determine KIE_alpha and KIE_beta
