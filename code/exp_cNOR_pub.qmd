@@ -737,7 +737,7 @@ cNOR_tidy_4$delta_15N <- factor(cNOR_tidy_4$delta_15N, levels = c("delta_alpha",
   geom_point(data = cNOR_tidy_4, mapping = 
          aes(x = one_minus_f, y = delta_15N_values, shape = delta_15N, color = delta_15N), size = 2)+
   scale_color_manual(name = "delta values",
-    values = c("#a6cee3", "#33a02c"),
+    values = c("#a6cee3", "#1E5C19"),
     labels = c(
     expression(paste(bold(delta^15),bold(N^alpha), sep="")),
     expression(paste(bold(delta^15),bold(N^beta), sep=""))
