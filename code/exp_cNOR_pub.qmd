@@ -216,19 +216,19 @@ write.csv(cNOR, here("data/output/exp_cNOR/cNOR.csv"), row.names = FALSE)
     ),
     
     delta_o =
-      paste(round(as.numeric(cNOR$delta_o), 2)),
+      paste(round(as.numeric(cNOR$delta_o), 1)),
     
     delta_p =
-      paste(round(as.numeric(cNOR$delta_p), 2)),
+      paste(round(as.numeric(cNOR$delta_p), 1)),
     
     delta_alpha =
-      paste(round(as.numeric(cNOR$delta_alpha), 2)),
+      paste(round(as.numeric(cNOR$delta_alpha), 1)),
     
     delta_beta =
-      paste(round(as.numeric(cNOR$delta_beta), 2)),
+      paste(round(as.numeric(cNOR$delta_beta), 1)),
     
     SP =
-      paste(round(as.numeric(cNOR$SP), 2))    
+      paste(round(as.numeric(cNOR$SP), 1))    
   ) %>%
    
    dplyr::select(
