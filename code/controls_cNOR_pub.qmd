@@ -428,19 +428,19 @@ write.csv(controls, here("data/output/exp_controls/controls.csv"), row.names = T
     ),
     
     delta_o =
-      paste(round(as.numeric(controls$delta_o), 2)),
+      paste(round(as.numeric(controls$delta_o), 1)),
     
     delta_p =
-      paste(round(as.numeric(controls$delta_p), 2)),
+      paste(round(as.numeric(controls$delta_p), 1)),
     
     delta_alpha =
-      paste(round(as.numeric(controls$delta_alpha), 2)),
+      paste(round(as.numeric(controls$delta_alpha), 1)),
     
     delta_beta =
-      paste(round(as.numeric(controls$delta_beta), 2)),
+      paste(round(as.numeric(controls$delta_beta), 1)),
     
     SP =
-      paste(round(as.numeric(controls$SP), 2))    
+      paste(round(as.numeric(controls$SP), 1))    
   ) %>%
    
    dplyr::select(
