@@ -433,24 +433,69 @@ ggsave(exp_Rayleigh_SP, filename = here("graphs/exp_cNOR/exp_Rayleigh_SP.tiff"),
 cNOR_lm_SP_2 <- lm(SP ~ `-flnf/(1-f)`, data = cNOR)
 summary(cNOR_lm_SP_2)
 ```
+#Import GC-ECD data for no-enzyme negative controls.
 
-#Figure 1 for MS: Graph N2O production vs time (pooled replicates)
-```{r plot_N2O_prod_pool}
-#Pivot table
-cNOR_tidy <- cNOR %>% 
-  pivot_longer(c(delta_p, delta_alpha, delta_beta), names_to = "delta_15N", values_to = "delta_15N_values")
+- 1 mL of NO (40.9 umol) was added to each reaction, so it is theoretically possible to produce 20.45 umol of N2O.
+```{r import_no_enzyme_GC-ECD}
+no_enzyme <- read.table(here("data/input/no_enzyme_GC-ECD.csv"),sep = ",", header = TRUE)
+```
 
-(cNOR_N2O_prod_pool <- ggplot(data = filter(cNOR_tidy, delta_15N == "delta_p" &!Name == "time_0"))+
-  geom_point(mapping = 
-         aes(x = Time_min, y = (N2O_nmol/1000)), shape = 16, size = 1.5, color = "black")+
+#Figure 1 for MS version 2: Plot N2O produced vs time for cNOR and no-enzyme controls (GC-ECD data)
+```{r plot_Fig_1_v2}
+
+#Combine experimental cNOR data and no-enzyme control data
+N2O_prod <- cNOR %>%
+  #Select the columns in cNOR that match no_enzyme
+  filter(!Name == "time_0") %>%
+  dplyr::select(Date, Name, Replicate, Time_min, N2O_nmol, N_s0) %>%
+  mutate(
+    N2O_umol = N2O_nmol/1000
+  ) %>%
+  dplyr::select(1:5, N2O_umol, everything()) %>%
+  dplyr::select(-N2O_nmol) %>%
+  
+  #Combine tables
+  rbind(no_enzyme) %>%
+  
+  #Name replicates for legend
+  mutate(
+  Rep_name = c(
+    rep("cNOR Replicates 1-3", each = 13),
+    rep("No Enzyme Replicates 1-2", each = 4)
+  )
+)
+
+(N2O_prod_fig <- ggplot()+
+  geom_point(data = N2O_prod,
+    mapping = 
+         aes(x = Time_min, y = N2O_umol, shape = Rep_name, color = Rep_name))+
+    
+  scale_color_manual(name = "Rep_name",
+    values = c("#CC79A7", "black"),
+    labels = c(
+    expression(paste(bold("cNOR"))),
+    expression(paste(bold("No Enzyme")))
+  ))+
+ 
+  scale_shape_manual(name = "Rep_name",
+    values = c(17, 16),
+    labels = c(
+    expression(paste(bold("cNOR"))),      
+    expression(paste(bold("No Enzyme")))
+  ))+ 
+
   xlab(expression(paste(bold("Time (min)"))))+
   ylab(expression(paste( bold(N[2]),bold("O" ), bold (" ("), bold( mu), bold("mol) "), sep="")))+
+
   xlim(0, 250)+
   ylim(0, 4)+
+    
   theme_bw()+
   theme(panel.grid.major = element_blank())+
   theme(panel.grid.minor = element_blank())+
-  
+    
+  theme(legend.title = element_blank())+
+   
   theme(axis.line = element_line(size=1, colour = "black"))+
   theme(axis.ticks = element_line(color="black", size=1))+
   #theme(axis.ticks.length = unit(0.2, "cm"))+
@@ -458,9 +503,10 @@ cNOR_tidy <- cNOR %>%
   theme(axis.title.x=element_text(margin=margin(10,20,0,0),size=12,face="bold"))+
   theme(axis.text.x=element_text(size=12,face="bold", color = "black"))+
   theme(axis.text.y=element_text(size=12,face="bold",hjust=1, color="black"))
+ 
 )
 
-ggsave(cNOR_N2O_prod_pool, filename = here("graphs/exp_cNOR/cNOR_N2O_prod_pool.tiff"), height = 2.5, width = 3.25, units = "in")
+ggsave(N2O_prod_fig, filename = here("graphs/exp_cNOR/N2O_prod_fig.tiff"), height = 3, width = 5, units = "in")
 
 ```
 
